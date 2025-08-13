@@ -3,11 +3,8 @@ using Mutagen.Bethesda;
 using Mutagen.Bethesda.Environments;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Cache;
-using Mutagen.Bethesda.Plugins.Masters;
-using Mutagen.Bethesda.Plugins.Order;
 using Mutagen.Bethesda.Plugins.Records;
 using Mutagen.Bethesda.Skyrim;
-using Noggog;
 using SECmd.Core;
 using SECmd.Utils;
 
@@ -459,6 +456,8 @@ namespace SECmd
                         dstIdle.DeepCopyIn(srcIdle);
                         if (srcIdle.EditorID != null)
                             dstIdle.EditorID = CreateFormId(srcIdle.EditorID, oldNameList, targetName);
+                        if(srcIdle.Filename != null)
+                            dstIdle.Filename = new(ReplaceNames(srcIdle.Filename.GivenPath, oldNameList, targetName));
 
                         exportedIdles[srcIdle.FormKey] = dstIdle.FormKey;
                         Console.WriteLine("Retargeted IDLE: {0} -> {1}", srcIdle.EditorID ?? "N/A", dstIdle.EditorID ?? "N/A");
