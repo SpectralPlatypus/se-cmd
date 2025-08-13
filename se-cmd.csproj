@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>SECmd</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="HKX2Library\**" />
+    <EmbeddedResource Remove="HKX2Library\**" />
+    <None Remove="HKX2Library\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Mutagen.Bethesda.Skyrim" Version="0.51.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="HKX2Library\HKX2\HKX2.csproj" />
+  </ItemGroup>
+
+</Project>

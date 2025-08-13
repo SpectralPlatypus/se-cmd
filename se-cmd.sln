@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36301.6 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "se-cmd", "se-cmd.csproj", "{B1ED6E6A-1309-4293-9A50-F73A79F3AD56}"
+	ProjectSection(ProjectDependencies) = postProject
+		{DA3707F2-C26F-8093-00B2-C7E3908C235E} = {DA3707F2-C26F-8093-00B2-C7E3908C235E}
+	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HKX2", "HKX2Library\HKX2\HKX2.csproj", "{DA3707F2-C26F-8093-00B2-C7E3908C235E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{B1ED6E6A-1309-4293-9A50-F73A79F3AD56}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B1ED6E6A-1309-4293-9A50-F73A79F3AD56}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B1ED6E6A-1309-4293-9A50-F73A79F3AD56}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B1ED6E6A-1309-4293-9A50-F73A79F3AD56}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DA3707F2-C26F-8093-00B2-C7E3908C235E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DA3707F2-C26F-8093-00B2-C7E3908C235E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DA3707F2-C26F-8093-00B2-C7E3908C235E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DA3707F2-C26F-8093-00B2-C7E3908C235E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {3BF75EC2-64C1-4AC2-8C37-1AD48DE42A10}
+	EndGlobalSection
+EndGlobal
