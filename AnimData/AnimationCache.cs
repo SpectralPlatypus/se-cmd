@@ -92,21 +92,22 @@ namespace SECmd.Core
         public void SaveCreature(string projectName, CacheEntry cacheEntry, FileInfo animDataFile, FileInfo animSetDataFile, bool saveMergedSets = true)
         {
             // Write Data block for this project
-            Directory.CreateDirectory(animationDataFolder);
-            using (StreamWriter streamWriter = new(Path.Combine(animationDataFolder, projectName + ".txt")))
+            string outputDir = animDataFile.Directory?.FullName ?? Environment.CurrentDirectory;
+            var animDataDir = Directory.CreateDirectory(Path.Combine(outputDir, animationDataFolder));
+            using (StreamWriter streamWriter = new(Path.Combine(animDataDir.FullName, projectName + ".txt")))
                 cacheEntry.Block.WriteBlock(streamWriter);
 
             if (cacheEntry.HasAnimationCache() && cacheEntry.Movement != null)
             {
-                var dir = Directory.CreateDirectory(Path.Combine(animationSetDataFolder,"boundanims"));
+                var dir = Directory.CreateDirectory(Path.Combine(outputDir, animationSetDataFolder, "boundanims"));
                 using (StreamWriter streamWriter = new(Path.Combine(dir.FullName, $"anims_{projectName}.txt")))
                     cacheEntry.Movement.WriteBlock(streamWriter);
             }
 
             if (cacheEntry is CreatureCacheEntry crEntry)
             {
-                var setDataDir = Directory.CreateDirectory(Path.Combine(animationSetDataFolder, projectName + "data"));
-                using (StreamWriter dirWriter = new(Path.Combine(animationSetDataFolder, "dirlist.txt")))
+                var setDataDir = Directory.CreateDirectory(Path.Combine(outputDir, animationSetDataFolder, projectName + "data"));
+                using (StreamWriter dirWriter = new(Path.Combine(outputDir, animationSetDataFolder, "dirlist.txt")))
                 {
                     foreach (var p in animationSetData.Projects)
                     {
