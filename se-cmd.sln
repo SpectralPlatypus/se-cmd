@@ -8,7 +8,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "se-cmd", "se-cmd.csproj", "
 		{DA3707F2-C26F-8093-00B2-C7E3908C235E} = {DA3707F2-C26F-8093-00B2-C7E3908C235E}
 	EndProjectSection
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HKX2", "HKX2Library\HKX2\HKX2.csproj", "{DA3707F2-C26F-8093-00B2-C7E3908C235E}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HKX2", "External\HKX2Library\HKX2\HKX2.csproj", "{DA3707F2-C26F-8093-00B2-C7E3908C235E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

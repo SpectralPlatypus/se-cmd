@@ -9,9 +9,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Remove="HKX2Library\**" />
-    <EmbeddedResource Remove="HKX2Library\**" />
-    <None Remove="HKX2Library\**" />
+    <Compile Remove="External\HKX2Library\**" />
+    <EmbeddedResource Remove="External\HKX2Library\**" />
+    <None Remove="External\HKX2Library\**" />
   </ItemGroup>
 
   <ItemGroup>
@@ -20,7 +20,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="HKX2Library\HKX2\HKX2.csproj" />
+    <ProjectReference Include="External\HKX2Library\HKX2\HKX2.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="NiflySharp">
+      <HintPath>..\NiflySharp\NiflySharp\bin\Debug\net8.0\NiflySharp.dll</HintPath>
+    </Reference>
+    <Reference Include="USD.NET">
+      <HintPath>usd\USD.NET.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
 </Project>

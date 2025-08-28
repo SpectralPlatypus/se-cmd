@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace SECmd.Core
+namespace SECmd.AnimData
 {
     internal class AnimationCache
     {
@@ -15,25 +15,13 @@ namespace SECmd.Core
             Idle,
             Attack
         }
-        struct EventInfo
+        struct EventInfo(EventType eventType, bool mirrored, List<HandVariableData.Data> handData)
         {
-            public EventType Type = EventType.Idle;
-            public bool Mirrored = false;
-            public List<HandVariableData.Data>? HandData = null;
-
-            public EventInfo(EventType eventType, bool mirrored, List<HandVariableData.Data> handData)
-            {
-                Type = eventType;
-                Mirrored = mirrored;
-                HandData = handData;
-            }
+            public EventType Type = eventType;
+            public bool Mirrored = mirrored;
+            public List<HandVariableData.Data>? HandData = handData;
         }
         #endregion
-
-        static string blocks_regex = "meshes\\\\animationdata\\\\.[^\\]+txt";
-        static string movements_blocks_regex = "meshes\\\\animationdata\\\\boundanims\\\\.[^\\]+txt";
-        static string attack_blocks_regex = "meshes\\\\animationsetdata\\\\.+\\\\.+txt";
-
 
         static string animationDataFolder = "animationdata";
         static string animationDataMergedFile = "animationdatasinglefile.txt";
@@ -167,7 +155,7 @@ namespace SECmd.Core
                 }
                 else
                 {
-                    ProjectDataBlock? movementData = animationData.MovementData.ContainsKey(index) ? animationData.MovementData[index] : null;
+                    ProjectDataBlock? movementData = animationData.MovementData.TryGetValue(index, out ProjectDataBlock? value) ? value : null;
                     miscEntries.Add(new(entryName, 
                         animationData.ProjectBlocks[index],
                         movementData));
@@ -238,7 +226,7 @@ namespace SECmd.Core
             }
             else
             {
-                eventMap[key] = new List<EventInfo>{ value };
+                eventMap[key] = [value];
             }
         }
     }

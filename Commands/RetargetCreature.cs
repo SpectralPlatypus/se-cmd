@@ -5,7 +5,7 @@ using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Plugins.Records;
 using Mutagen.Bethesda.Skyrim;
-using SECmd.Core;
+using SECmd.AnimData;
 using SECmd.Utils;
 using System.CommandLine;
 
@@ -13,7 +13,7 @@ namespace SECmd.Commands
 {
     internal static class RetargetCreature
     {
-        static Dictionary<string, List<string>> altNameLut = new()
+        static readonly Dictionary<string, List<string>> altNameLut = new()
         {
             ["werewolfbeast"] = ["Werewolfbeast", "Werewolf"],
             ["dragonpriest"] = ["Dragonpriest", "Dragon_Priest", "DPriest"],
@@ -578,7 +578,7 @@ namespace SECmd.Commands
 
         static T? GetVariant<T>(hkRootLevelContainer? root) where T : class?, IHavokObject
         {
-            _ = root ?? throw new ArgumentNullException("Empty root container");
+            _ = root ?? throw new ArgumentNullException(nameof(root));
             if (root.m_namedVariants.Count == 0)
             {
                 throw new IOException("Root does not contain any variants");
