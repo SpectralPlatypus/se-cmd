@@ -5,6 +5,7 @@ using System.Linq;
 using System.Numerics;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace SECmd.Utils
@@ -13,6 +14,11 @@ namespace SECmd.Utils
     {
         static int count = 0;
         public static TfToken GetPathName(string prefix) => new($"{prefix}_{count++}");
+
+        public static TfToken SanitizeName(string name)
+        {
+            return new(Regex.Replace(name, @"[^A-Za-z0-9_]+", "_"));
+        }
 
         public static void CreateBoxMesh(UsdGeomMesh mesh, Vector3 extents)
         {
@@ -86,6 +92,25 @@ namespace SECmd.Utils
             GfVec3f => SdfValueTypeNames.Vector3f,
             _ => throw new Exception("Unknown type")
         };
+
+        internal static Matrix4x4 ToMatrix4x4(this GfMatrix4d mtx)
+        {
+            Matrix4x4 mat = new();
+            for (int i = 0; i < 4; i++)
+                for (int j = 0; j < 4; j++)
+                    mat[i, j] = (float)mtx.GetRow(i)[j];
+
+            return mat;
+        }
+
+        internal static GfMatrix4d ToGfMatrix4d(this Matrix4x4 mtx)
+        {
+            GfMatrix4d mat = new();
+            for (int i = 0; i < 4; i++)
+                mat.SetRow(i, new(mtx[i, 0], mtx[i, 1], mtx[i, 2], mtx[i, 3]));
+
+            return mat;
+        }
     }
 
 }

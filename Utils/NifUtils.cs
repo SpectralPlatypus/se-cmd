@@ -4,6 +4,7 @@ using NiflySharp.Structs;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -143,5 +144,35 @@ namespace SECmd.Utils
 				//red
 				return new(1.0f, 0.0f, 0.0f);
 		  }
-	 }
+
+		  internal static void AddScale(this Matrix33 mtx, float scale)
+		  {
+				mtx.M11 *= scale;
+				mtx.M12 *= scale;
+				mtx.M13 *= scale;
+				
+				mtx.M21 *= scale;
+				mtx.M22 *= scale;
+				mtx.M23 *= scale;
+
+            mtx.M31 *= scale;
+            mtx.M32 *= scale;
+            mtx.M33 *= scale;
+        }
+
+        internal static void AddScale(this Matrix33 mtx, Vector3 scale)
+        {
+            mtx.M11 *= scale.X;
+            mtx.M12 *= scale.X;
+            mtx.M13 *= scale.X;
+
+            mtx.M21 *= scale.Y;
+            mtx.M22 *= scale.Y;
+            mtx.M23 *= scale.Y;
+
+            mtx.M31 *= scale.Z;
+            mtx.M32 *= scale.Z;
+            mtx.M33 *= scale.Z;
+        }
+    }
 }
