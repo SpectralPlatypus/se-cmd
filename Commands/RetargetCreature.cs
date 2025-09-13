@@ -18,7 +18,7 @@ namespace SECmd.Commands
             ["werewolfbeast"] = ["Werewolfbeast", "Werewolf"],
             ["dragonpriest"] = ["Dragonpriest", "Dragon_Priest", "DPriest"],
             ["benthiclurker"] = ["BenthicLurker", "Fishman"],
-            ["mudcrab"] = ["Mudcrab", "Mcrab", "Crab"],
+            ["mudcrab"] = ["Mudcrab", "Mcrab", "Crab", "Mcarbt"],
             ["hagraven"] = ["Hagraven", "Havgraven"],
             ["sabrecat"] = ["SabreCat", "SCat", "Sabrecast"],
         };
@@ -111,6 +111,7 @@ namespace SECmd.Commands
             }
 
             string srcCharPath = Path.Combine(srcDir, stringData.m_characterFilenames![0]);
+
             if (!File.Exists(srcCharPath))
             {
                 Console.WriteLine("Character file doesn't exist!");
@@ -118,6 +119,13 @@ namespace SECmd.Commands
             }
             Console.WriteLine($"Character file: {stringData.m_characterFilenames[0]}");
             string srcName = Path.GetFileNameWithoutExtension(srcCharPath);
+            {
+                int trailIdx = srcName.IndexOf("character", StringComparison.OrdinalIgnoreCase);
+                if(trailIdx > 0)
+                {
+                    srcName = srcName[0..trailIdx];
+                }
+            }
 
             Console.WriteLine($"Source Character name: {srcName}");
 
@@ -520,7 +528,7 @@ namespace SECmd.Commands
                 }
             }
 
-            outputMod.WriteToBinary($".\\{targetName}.esp");
+            outputMod.WriteToBinary($"{Path.Combine(outputDir.FullName,targetName)}.esp");
         }
 
         // TODO: Recursion isn't necessary, also check for behavior name only at top level node?
@@ -568,9 +576,11 @@ namespace SECmd.Commands
 
         static string ReplaceNames(string text, IList<string> patterns, string replacement, StringComparison stringComparison = StringComparison.OrdinalIgnoreCase)
         {
+            var orig = text;
             foreach (string p in patterns)
             {
                 text = text.Replace(p, replacement, stringComparison);
+                if (orig != text) break;
             }
 
             return text;
