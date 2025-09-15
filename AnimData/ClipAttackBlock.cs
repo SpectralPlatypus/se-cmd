@@ -13,10 +13,17 @@
         public readonly bool IsMirrored() => Mirrored > 0;
     }
 
-    internal class ClipAttackBlock : IBlock
+    internal class ClipAttackBlock : IBlock, ICloneable
     {
-
         internal List<AttackDataBlock> AttackData { get; set; } = [];
+
+        public object Clone()
+        {
+            return new ClipAttackBlock
+            {
+                AttackData = [.. AttackData]
+            };
+        }
 
         public void ReadBlock(TextReader reader)
         {

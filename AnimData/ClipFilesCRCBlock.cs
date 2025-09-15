@@ -2,7 +2,7 @@
 
 namespace SECmd.AnimData
 {
-    internal class ClipFilesCRCBlock : IBlock
+    internal struct ClipFilesCRCBlock : IBlock
     {
         List<string> entries = [];
 

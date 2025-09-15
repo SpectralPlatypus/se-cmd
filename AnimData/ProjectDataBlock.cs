@@ -1,6 +1,6 @@
 ﻿namespace SECmd.AnimData
 {
-    internal class ProjectDataBlock : IBlock,ILineCounter
+    internal class ProjectDataBlock : IBlock,ILineCounter, ICloneable
     {
         List<ClipMovementData> movementData = [];
 
@@ -25,6 +25,17 @@
             {
                 clipMovementData.WriteBlock(writer);
             }
+        }
+
+        public object Clone()
+        {
+            var clone = new ProjectDataBlock();
+            foreach(var clipMovementData in movementData)
+            {
+                clone.movementData.Add((ClipMovementData)clipMovementData.Clone());
+            }
+
+            return clone;
         }
     }
 }

@@ -2,7 +2,7 @@
 
 namespace SECmd.AnimData
 {
-    internal class ClipMovementData : IBlock, ILineCounter
+    internal class ClipMovementData : IBlock, ILineCounter, ICloneable
     {
         public int CacheIndex { get; private set; } = 0;
         float duration = 0f;
@@ -22,7 +22,7 @@ namespace SECmd.AnimData
                 if (entries?.Length != 4)
                     throw new IOException("Invalid translation format");
                 translations.Add(
-                    (float.Parse(entries[0]), 
+                    (float.Parse(entries[0]),
                     new(float.Parse(entries[1]), float.Parse(entries[2]), float.Parse(entries[3])
                     )));
             }
@@ -45,10 +45,10 @@ namespace SECmd.AnimData
             writer.WriteLine(CacheIndex);
             writer.WriteLine(duration);
             writer.WriteLine(translations.Count);
-            foreach( var tr in translations)
+            foreach (var tr in translations)
             {
                 // Lowercase exponent notation
-                writer.WriteLine(string.Join(' ',tr.Item1, tr.Item2.X, tr.Item2.Y, tr.Item2.Z).ToLower());
+                writer.WriteLine(string.Join(' ', tr.Item1, tr.Item2.X, tr.Item2.Y, tr.Item2.Z).ToLower());
             }
             writer.WriteLine(rotations.Count);
             foreach (var tr in rotations)
@@ -56,6 +56,19 @@ namespace SECmd.AnimData
                 writer.WriteLine(string.Join(' ', tr.Item1, tr.Item2.X, tr.Item2.Y, tr.Item2.Z, tr.Item2.W).ToLower());
             }
             writer.WriteLine();
+        }
+
+        public object Clone()
+        {
+            var clone = new ClipMovementData
+            {
+                CacheIndex = CacheIndex,
+                duration = duration,
+                translations = [.. translations],
+                rotations = [.. rotations]
+            };
+
+            return clone;
         }
     }
 }

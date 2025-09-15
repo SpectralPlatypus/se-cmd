@@ -1,12 +1,11 @@
 ﻿namespace SECmd.AnimData
 {
-    internal class ProjectBlock : IBlock, ILineCounter
+    internal class ProjectBlock : IBlock, ILineCounter, ICloneable
     {
         bool hasProjectFiles = false;
         List<string> projectFiles = [];
-        bool hasAnimationCache = false;
-        public bool HasAnimationCache { get { return hasAnimationCache; } }
-        public List<ClipGeneratorBlock> Clips { get; } = [];
+        public List<ClipGeneratorBlock> Clips { get; private set; } = [];
+        public bool HasAnimationCache { get; private set; } = false;
 
         public int LineCount
         {
@@ -14,6 +13,22 @@
             {
                 return 2 + projectFiles.Count + 1 + Clips.Aggregate(0, (acc, x) => acc += x.LineCount);
             }
+        }
+
+        public object Clone()
+        {
+            ProjectBlock clone = new()
+            {
+                hasProjectFiles = this.hasProjectFiles,
+                HasAnimationCache = this.HasAnimationCache,
+                projectFiles = [.. this.projectFiles],
+                Clips = []
+            };
+            foreach (var x in Clips)
+            {
+                clone.Clips.Add((ClipGeneratorBlock)x.Clone());
+            }
+            return clone;
         }
 
         public void ReadBlock(TextReader reader)
@@ -32,8 +47,8 @@
                 }
             }
             input = reader.ReadLine()!;
-            hasAnimationCache = input == "1";
-            if (hasAnimationCache)
+            HasAnimationCache = input == "1";
+            if (HasAnimationCache)
             {
                 while(reader.Peek() >= 0)
                 {
@@ -53,8 +68,8 @@
                 foreach (string file in projectFiles)
                     writer.WriteLine(file);
             }
-            writer.WriteLine(hasAnimationCache ? "1" : "0");
-            if (hasAnimationCache)
+            writer.WriteLine(HasAnimationCache ? "1" : "0");
+            if (HasAnimationCache)
             {
                 foreach(var clipBlock in Clips)
                 {

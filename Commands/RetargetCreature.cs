@@ -33,7 +33,7 @@ namespace SECmd.Commands
                 Description = "Location of Skyrim SE data folder",
                 DefaultValueFactory = parseResult => new(GameEnvironment.Typical.Skyrim(SkyrimRelease.SkyrimSE).DataFolderPath.Path)
             };
-            Option<bool> outputXmlOption = new("--xml", "-x") { Description = "Output Havok files in XML", DefaultValueFactory = ParseResult => false }; 
+            Option<bool> outputXmlOption = new("--xml", "-x") { Description = "Output Havok files in XML along with HKX", DefaultValueFactory = ParseResult => false };
 
             Command retargetCommand = new("retarget", "Retarget creature project, form and assets")
             {
@@ -45,7 +45,7 @@ namespace SECmd.Commands
             };
 
             retargetCommand.SetAction(parseResults => 
-            RetargetCreature.Execute(
+            Execute(
                 parseResults.GetValue(fileOption)!,
                 parseResults.GetValue(targetOption)!,
                 parseResults.GetValue(directoryOption)!,

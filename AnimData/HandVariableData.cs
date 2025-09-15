@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace SECmd.AnimData
 {
-    internal class HandVariableData : IBlock
+    internal class HandVariableData : IBlock, ICloneable
     {
         enum EquipType
         {
@@ -55,6 +55,17 @@ namespace SECmd.AnimData
                 writer.WriteLine(data.ValueMin);
                 writer.WriteLine(data.ValueMax);
             }
+        }
+
+        public object Clone()
+        {
+            var clone = new HandVariableData();
+            foreach (var data in Variables)
+            {
+                clone.Variables.Add(data);
+            }
+
+            return clone;
         }
     }
 }

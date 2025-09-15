@@ -6,16 +6,16 @@ using System.Threading.Tasks;
 
 namespace SECmd.AnimData
 {
-    internal class ClipGeneratorBlock : IBlock,ILineCounter
+    internal class ClipGeneratorBlock : IBlock, ILineCounter, ICloneable
     {
         public string Name { get; private set; } = "";
         public int CacheIndex { get; private set; } = 0;
         float playbackSpeed = 0f;
-        float cropStartTime = 0f; 
-        float cropEndTime = 0f; 
+        float cropStartTime = 0f;
+        float cropEndTime = 0f;
         List<(string, float)> events = [];
 
-        public int LineCount { get { return 6 +  events.Count + 1; } }
+        public int LineCount { get { return 6 + events.Count + 1; } }
 
 
 
@@ -26,7 +26,7 @@ namespace SECmd.AnimData
             playbackSpeed = float.Parse(reader.ReadLine()!);
             cropStartTime = float.Parse(reader.ReadLine()!);
             cropEndTime = float.Parse(reader.ReadLine()!);
-            
+
             int eventCount = int.Parse(reader.ReadLine()!);
             for (int i = 0; i < eventCount; i++)
             {
@@ -51,6 +51,21 @@ namespace SECmd.AnimData
                 writer.WriteLine(item.Item1 + ":" + item.Item2);
             }
             writer.WriteLine();
+        }
+
+        public object Clone()
+        {
+            ClipGeneratorBlock clone = new()
+            {
+                Name = this.Name,
+                CacheIndex = this.CacheIndex,
+                playbackSpeed = this.playbackSpeed,
+                cropStartTime = this.cropStartTime,
+                cropEndTime = this.cropEndTime,
+                events = [.. this.events]
+            };
+
+            return clone;
         }
     }
 }

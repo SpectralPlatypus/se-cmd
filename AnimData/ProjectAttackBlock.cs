@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 namespace SECmd.AnimData
 {
-    internal class ProjectAttackBlock : IBlock
+    internal class ProjectAttackBlock : IBlock, ICloneable
     {
         string animVersion = "V3";
         public List<string> SwapEvents { get; private set; } = [];
@@ -41,6 +41,20 @@ namespace SECmd.AnimData
             HandVariableData.WriteBlock(writer);
             ClipAttack.WriteBlock(writer);
             crcData.WriteBlock(writer);
+        }
+
+        public object Clone()
+        {
+            var clone = new ProjectAttackBlock()
+            {
+                animVersion = animVersion,
+                SwapEvents = [.. SwapEvents],
+                HandVariableData = (HandVariableData)HandVariableData.Clone(),
+                ClipAttack = (ClipAttackBlock)ClipAttack.Clone(),
+                crcData = crcData
+            };
+
+            return clone;
         }
     }
 }

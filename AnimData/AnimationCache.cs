@@ -61,9 +61,9 @@ namespace SECmd.AnimData
                 return null; 
             }
             var creature = (CreatureCacheEntry)src;
-            ProjectBlock block = creature.Block;
-            ProjectDataBlock? movements = creature.Movement;
-            ProjectAttackListBlock sets = creature.AttackList;
+            ProjectBlock block = (ProjectBlock)creature.Block.Clone();
+            ProjectDataBlock movements = (ProjectDataBlock)creature.Movement.Clone();
+            ProjectAttackListBlock sets = (ProjectAttackListBlock)creature.AttackList.Clone();
 
             int index = animationData.AddProject(dstProject + ".txt", block, movements);
             int creatureIdx = animationSetData.AddProjectAttackBlock($"{dstProject}Data\\{dstProject}.txt", sets);
@@ -87,9 +87,9 @@ namespace SECmd.AnimData
 
             if (cacheEntry.HasAnimationCache() && cacheEntry.Movement != null)
             {
-                var dir = Directory.CreateDirectory(Path.Combine(outputDir, animationSetDataFolder, "boundanims"));
-                using (StreamWriter streamWriter = new(Path.Combine(dir.FullName, $"anims_{projectName}.txt")))
-                    cacheEntry.Movement.WriteBlock(streamWriter);
+                var dir = Directory.CreateDirectory(Path.Combine(outputDir, animationDataFolder, "boundanims"));
+                using StreamWriter streamWriter = new(Path.Combine(dir.FullName, $"anims_{projectName}.txt"));
+                cacheEntry.Movement.WriteBlock(streamWriter);
             }
 
             if (cacheEntry is CreatureCacheEntry crEntry)
@@ -155,7 +155,7 @@ namespace SECmd.AnimData
                 }
                 else
                 {
-                    ProjectDataBlock? movementData = animationData.MovementData.TryGetValue(index, out ProjectDataBlock? value) ? value : null;
+                    ProjectDataBlock? movementData = animationData.MovementData.GetValueOrDefault(index);
                     miscEntries.Add(new(entryName, 
                         animationData.ProjectBlocks[index],
                         movementData));

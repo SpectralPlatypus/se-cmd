@@ -2,10 +2,24 @@
 
 namespace SECmd.AnimData
 {
-    internal class ProjectAttackListBlock : IBlock
+    internal class ProjectAttackListBlock : IBlock, ICloneable
     {
         internal List<string> ProjectFiles { get; private set; } = [];
         internal List<ProjectAttackBlock> ProjectAttackBlocks { get; private set; } = [];
+
+        public object Clone()
+        {
+            var clone = new ProjectAttackListBlock
+            {
+                ProjectFiles = [.. ProjectFiles]
+            };
+            foreach (var item in ProjectAttackBlocks)
+            {
+                clone.ProjectAttackBlocks.Add((ProjectAttackBlock)item.Clone());
+            }
+
+            return clone;
+        }
 
         public void ReadBlock(TextReader reader)
         {
