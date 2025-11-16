@@ -21,6 +21,7 @@ namespace SECmd.Commands
             ["mudcrab"] = ["Mudcrab", "Mcrab", "Crab", "Mcarbt"],
             ["hagraven"] = ["Hagraven", "Havgraven"],
             ["sabrecat"] = ["SabreCat", "SCat", "Sabrecast"],
+            ["dog"] = ["Dog", "Canine"],
         };
 
         public static void Register(RootCommand root)
@@ -144,6 +145,7 @@ namespace SECmd.Commands
             WriteHavok(projectRoot, new FileInfo(Path.Combine(dstDir.FullName, targetName + "project.hkx")), outputXml);
 
             Console.WriteLine($"Loading char file {srcCharPath}");
+
             var charRoot = OpenHavokFile(new FileInfo(srcCharPath));
             if (charRoot is null)
             {
@@ -232,9 +234,9 @@ namespace SECmd.Commands
                                     }
                                     annotation.m_annotations[j].m_text = dstAnnotation;
 
-                                    if (text.StartsWith("SoundPlay."))
+                                    if (text.StartsWith("SoundPlay.") || text.StartsWith("SoundStop.") || text.StartsWith("SoundRelease."))
                                     {
-                                        retargetSOUN.TryAdd(text["SoundPlay.".Length..], dstAnnotation["SoundPlay.".Length..]);
+                                        retargetSOUN.TryAdd(text.Split('.')[1], dstAnnotation.Split('.')[1]);
                                         retargetMap[text] = dstAnnotation;
                                     }
                                 }
@@ -267,6 +269,8 @@ namespace SECmd.Commands
             WriteHavok(charRoot, new FileInfo(Path.Combine(dstDir.FullName, dstCharPath)), outputXml);
 
             // Locate and retarget all behavior files
+            Queue<string> behaviorQueue = new();
+            behaviorQueue.Enqueue(srcBehaviorName);
             string srcBehaviorMain = Path.Combine(srcDir, srcBehaviorName);
             var srcBehaviorDir = Directory.GetParent(srcBehaviorMain);
             if (srcBehaviorDir == null)
@@ -277,9 +281,10 @@ namespace SECmd.Commands
 
             Dictionary<string, string> retargetMOVT = [];
             Dictionary<string, string> retargetRFCT = [];
-            // Iterate over behaviors
-            foreach (FileInfo bFile in srcBehaviorDir.GetFiles("*.hkx"))
+            while(behaviorQueue.TryDequeue(out string file))
             {
+                FileInfo bFile = new(Path.Combine(srcDir, file));
+
                 // Used later for handling hacky behavior. The proper way of handling this would be to evaluate nested conditions 
                 bool mainFile = srcBehaviorMain.Contains(bFile.Name, StringComparison.OrdinalIgnoreCase);
 
@@ -288,9 +293,17 @@ namespace SECmd.Commands
 
                 var bGraphVariant = GetVariant<hkbBehaviorGraph>(bRoot);
                 if (bGraphVariant?.m_data?.m_stringData == null) continue;
+                Console.WriteLine($"=== Graph: {bGraphVariant.m_name} ===");
 
+                foreach (var obj in parsedObj)
+                {
+                    if (obj.Value is hkbBehaviorReferenceGenerator behaviorRef)
+                    {
+                        Console.WriteLine($"Discovered a referenced behavior: {behaviorRef.m_behaviorName}");
+                        behaviorQueue.Enqueue(behaviorRef.m_behaviorName);
+                    }
+                }
 
-                Console.WriteLine($"Graph: {bGraphVariant.m_name}");
                 Console.WriteLine("Retargeting Events:");
                 for (int i = 0; i < bGraphVariant.m_data.m_stringData.m_eventNames.Count; ++i)
                 {
@@ -300,7 +313,8 @@ namespace SECmd.Commands
                     {
                         dstEventName = ReplaceNames(eventName, srcNameList, targetName);
                     }
-                    else if (mainFile && eventName.StartsWith("SoundPlay.") || eventName.StartsWith("Func."))
+                    else if (mainFile && eventName.StartsWith("SoundPlay.") || eventName.StartsWith("SoundStop.") ||
+                        eventName.StartsWith("SoundRelease.") || eventName.StartsWith("Func."))
                     {
                         // We still have to assign a unique name to this event to be able to export a new FORM
                         // Update; 
@@ -310,9 +324,10 @@ namespace SECmd.Commands
                     if (dstEventName != eventName)
                     {
                         Console.WriteLine("\tWill substitute {0} references with {1}", eventName, dstEventName);
-                        if (eventName.StartsWith("SoundPlay."))
+                        if (eventName.StartsWith("SoundPlay.") || eventName.StartsWith("SoundStop.") ||
+                        eventName.StartsWith("SoundRelease."))
                         {
-                            retargetSOUN.TryAdd(eventName["SoundPlay.".Length..], dstEventName["SoundPlay.".Length..]);
+                            retargetSOUN.TryAdd(eventName.Split('.')[1], dstEventName.Split('.')[1]);
                         }
                         else if (eventName.StartsWith("Func."))
                         {
@@ -580,7 +595,6 @@ namespace SECmd.Commands
             foreach (string p in patterns)
             {
                 text = text.Replace(p, replacement, stringComparison);
-                if (orig != text) break;
             }
 
             return text;
