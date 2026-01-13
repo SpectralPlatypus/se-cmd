@@ -1,10 +1,15 @@
 ﻿using HKX2;
 using Mutagen.Bethesda;
+using Mutagen.Bethesda.Archives;
+using Mutagen.Bethesda.Archives.DI;
 using Mutagen.Bethesda.Environments;
 using Mutagen.Bethesda.Plugins;
+using Mutagen.Bethesda.Plugins.Aspects;
 using Mutagen.Bethesda.Plugins.Cache;
+using Mutagen.Bethesda.Plugins.Cache.Internals.Implementations;
 using Mutagen.Bethesda.Plugins.Records;
 using Mutagen.Bethesda.Skyrim;
+using Noggog;
 using SECmd.AnimData;
 using SECmd.Utils;
 using System.CommandLine;
@@ -26,7 +31,7 @@ namespace SECmd.Commands
 
         public static void Register(RootCommand root)
         {
-            Option<FileInfo> fileOption = new("--input", "-i") { Description = "Source project file to be retargeted", Required = true };
+            Option<string> raceOption = new("--input", "-i") { Description = "Source race editor ID to be retargeted", Required = true };
             Option<string> targetOption = new("--target", "-t") { Description = "Name of the target creature", Required = true };
             Option<DirectoryInfo> directoryOption = new("--output", "-o") { Description = "Output directory", DefaultValueFactory = parseResult => new(Environment.CurrentDirectory) };
             Option<DirectoryInfo> skyrimDataOption = new("--sdata", "-s")
@@ -38,16 +43,16 @@ namespace SECmd.Commands
 
             Command retargetCommand = new("retarget", "Retarget creature project, form and assets")
             {
-                fileOption,
+                raceOption,
                 targetOption,
                 directoryOption,
                 skyrimDataOption,
                 outputXmlOption
             };
 
-            retargetCommand.SetAction(parseResults => 
+            retargetCommand.SetAction(parseResults =>
             Execute(
-                parseResults.GetValue(fileOption)!,
+                parseResults.GetValue(raceOption)!,
                 parseResults.GetValue(targetOption)!,
                 parseResults.GetValue(directoryOption)!,
                 parseResults.GetValue(skyrimDataOption)!,
@@ -57,9 +62,34 @@ namespace SECmd.Commands
             root.Subcommands.Add(retargetCommand);
         }
 
-        public static void Execute(FileInfo inputFile, string targetName, DirectoryInfo outputDir, DirectoryInfo skyrimDataDir, bool outputXml)
+        public static void Execute(string raceEdid, string targetName, DirectoryInfo outputDir, DirectoryInfo skyrimDataDir, bool outputXml)
         {
             Dictionary<string, string> retargetMap = [];
+
+            //using var env = GameEnvironment.Typical.Skyrim(SkyrimRelease.SkyrimSE);
+            using var env = GameEnvironment.Typical.Builder<ISkyrimMod, ISkyrimModGetter>(GameRelease.SkyrimSE)
+                .WithTargetDataFolder(skyrimDataDir)
+                .Build();
+            // Get all master
+            var loadOrder = env.LoadOrder.ListedOrder.Where(x => x.Mod != null && x.Mod.IsMaster);
+            var linkCache = loadOrder.ToImmutableLinkCache();
+            var archive = Archive.CreateReader(GameRelease.SkyrimSE, env.DataFolderPath.GetFile("Skyrim - Animations.bsa"));
+            var outputMod = new SkyrimMod(ModKey.FromName(targetName, ModType.Plugin), SkyrimRelease.SkyrimSE);
+
+            if (!linkCache.TryResolve<IRaceGetter>(raceEdid, out var raceRecord))
+            {
+                Console.WriteLine($"Failed to find the requested RACE form: {raceEdid}");
+                return;
+            }
+
+            if (raceRecord.BehaviorGraph?.Male == null)
+            {
+                Console.WriteLine("RACE Record is missing male behavior graph");
+                return;
+            }
+
+            string bhkProjPath = raceRecord.BehaviorGraph.Male.File.DataRelativePath.Path;
+            FileInfo inputFile = new(env.DataFolderPath.GetFile(bhkProjPath));
 
             if (!inputFile.Exists)
             {
@@ -67,22 +97,20 @@ namespace SECmd.Commands
                 return;
             }
 
-            string meshDir = Path.Combine(skyrimDataDir.FullName, "meshes");// inFile.Substring(0, inFile.IndexOf("actors"));
+            string meshDir = Path.Combine(env.DataFolderPath, "meshes");
             var srcDir = inputFile.Directory?.FullName;
-            if(srcDir == null)
+            if (srcDir == null)
             {
-                Console.WriteLine("");
+                Console.WriteLine("Source behavior parent directory cannot be found??");
                 return;
             }
-            
+
             var dstDir = Directory.CreateDirectory(Path.Combine(outputDir.FullName, targetName));
 
-            FileInfo animDataFile = new(Path.Combine(meshDir, "animationdatasinglefile.txt"));
-            FileInfo animSetDataFile = new(Path.Combine(meshDir, "animationsetdatasinglefile.txt"));
-            AnimationCache? animCache = null;
+            AnimationCache animCache;
             try
             {
-                animCache = new(animDataFile, animSetDataFile);
+                animCache = new(meshDir);
             }
             catch (Exception ex)
             {
@@ -90,14 +118,8 @@ namespace SECmd.Commands
                 return;
             }
 
-            if (animCache == null)
-            {
-                Console.WriteLine("Anim cache object is null!");
-                return;
-            }
-
             var projectRoot = OpenHavokFile(inputFile);
-            if(projectRoot == null)
+            if (projectRoot == null)
             {
                 Console.WriteLine($"Failed to open file: {inputFile.Name}");
                 return;
@@ -122,7 +144,7 @@ namespace SECmd.Commands
             string srcName = Path.GetFileNameWithoutExtension(srcCharPath);
             {
                 int trailIdx = srcName.IndexOf("character", StringComparison.OrdinalIgnoreCase);
-                if(trailIdx > 0)
+                if (trailIdx > 0)
                 {
                     srcName = srcName[0..trailIdx];
                 }
@@ -142,10 +164,11 @@ namespace SECmd.Commands
             stringData!.m_characterFilenames[0] = dstCharPath;
 
             // Write project file
-            WriteHavok(projectRoot, new FileInfo(Path.Combine(dstDir.FullName, targetName + "project.hkx")), outputXml);
+            WriteHavok(projectRoot, new FileInfo(Path.Combine(dstDir.FullName, targetName + "Project.hkx")), outputXml);
 
             Console.WriteLine($"Loading char file {srcCharPath}");
 
+            //using Stream charStream = GetStream(env.DataFolderPath, srcCharPath, archive);
             var charRoot = OpenHavokFile(new FileInfo(srcCharPath));
             if (charRoot is null)
             {
@@ -170,13 +193,13 @@ namespace SECmd.Commands
 
             string srcRigPath = Path.Combine(srcDir, charVariant.m_stringData.m_rigName);
             var rigRoot = OpenHavokFile(new FileInfo(srcRigPath));
-            
+
             if (rigRoot == null)
             {
                 Console.WriteLine($"Failed to open skeleton file: {Path.GetFileName(srcRigPath)}");
                 return;
             }
-            
+
             // We could just copy the file over but validating its contents could be useful
             var rigVariant = GetVariant<hkaAnimationContainer>(rigRoot);
             WriteHavok(rigRoot, new FileInfo(Path.Combine(dstDir.FullName, charVariant.m_stringData.m_rigName)), outputXml);
@@ -281,7 +304,7 @@ namespace SECmd.Commands
 
             Dictionary<string, string> retargetMOVT = [];
             Dictionary<string, string> retargetRFCT = [];
-            while(behaviorQueue.TryDequeue(out string file))
+            while (behaviorQueue.TryDequeue(out string file))
             {
                 FileInfo bFile = new(Path.Combine(srcDir, file));
 
@@ -313,8 +336,8 @@ namespace SECmd.Commands
                     {
                         dstEventName = ReplaceNames(eventName, srcNameList, targetName);
                     }
-                    else if (mainFile && eventName.StartsWith("SoundPlay.") || eventName.StartsWith("SoundStop.") ||
-                        eventName.StartsWith("SoundRelease.") || eventName.StartsWith("Func."))
+                    else if (mainFile && (eventName.StartsWith("SoundPlay.") || eventName.StartsWith("SoundStop.") ||
+                        eventName.StartsWith("SoundRelease.") || eventName.StartsWith("Func.")))
                     {
                         // We still have to assign a unique name to this event to be able to export a new FORM
                         // Update; 
@@ -439,25 +462,18 @@ namespace SECmd.Commands
                 dstCache.AttackList.ReadBlock(sr);
             }
 
-            // Save creature -- I'm tired boss
+            // Save creature in anim cache
             try
             {
-                animCache.SaveCreature(targetName + "project", dstCache, 
-                    new(Path.Combine(outputDir.FullName, "animationdatasinglefile.txt")), 
-                    new(Path.Combine(outputDir.FullName, "animationsetdatasinglefile.txt")));
+                animCache.SaveCreature(targetName + "project", dstCache,
+                    new(Path.Combine(outputDir.FullName, AnimationCache.AnimationDataMergedFile)),
+                    new(Path.Combine(outputDir.FullName, AnimationCache.AnimationSetMergedDataFile)));
             }
             catch (Exception ex)
             {
                 Console.WriteLine("Failed to save target creature: {0}", ex.ToString());
                 return;
             }
-
-            // Now... ESM time
-            using var env = GameEnvironment.Typical.Skyrim(SkyrimRelease.SkyrimSE);
-            // Get all master
-            var loadOrder = env.LoadOrder.PriorityOrder.Where(x => x.Mod != null && x.Mod.IsMaster);
-            var linkCache = loadOrder.ToImmutableLinkCache();
-            var outputMod = new SkyrimMod(ModKey.FromNameAndExtension(Path.GetFileName(targetName + ".esp")), SkyrimRelease.SkyrimSE);
 
             foreach (var srcEdId in retargetSOUN)
             {
@@ -479,7 +495,7 @@ namespace SECmd.Commands
                 //Failed to retrieve form
                 if (targetForm == null) continue;
                 targetForm.EditorID = CreateFormId(srcEdId.Key, srcNameList, targetName);
-                Console.WriteLine($"Retargeted SNDR: {sndr!.EditorID } -> {targetForm.EditorID}");
+                Console.WriteLine($"Retargeted SNDR: {sndr!.EditorID} -> {targetForm.EditorID}");
             }
 
             foreach (var movtForm in loadOrder.MovementType().WinningOverrides())
@@ -531,26 +547,159 @@ namespace SECmd.Commands
                     }
                 }
             }
-            // Second loop, fix ANAM links
-            foreach (var idle in outputMod.IdleAnimations.Records)
+            // Fix ANAM links
+            outputMod.RemapLinks(exportedIdles);
+
+            // Finally, export RACE record etc
+            CopyRaceForm(raceRecord, linkCache, outputMod, srcNameList, targetName);
+
+            outputMod.WriteToBinary($"{Path.Combine(outputDir.FullName, targetName)}.esp");
+        }
+
+        private static Stream GetStream(string baseDir, string fileRelativePath, IArchiveReader archive)
+        {
+            var fileAbsPath = Path.Combine(baseDir, fileRelativePath);
+            if (File.Exists(fileAbsPath))
+                return new FileInfo(fileAbsPath).OpenRead();
+
+            var fileDir = Path.GetDirectoryName(fileRelativePath);
+            if (fileDir != null && archive.TryGetFolder(fileDir, out var folder))
             {
-                for (int i = 0; i < idle.RelatedIdles.Count; i++)
+                foreach (var file in folder.Files.Where(x => x.Path.Equals(fileRelativePath, StringComparison.OrdinalIgnoreCase)))
                 {
-                    if (linkCache.TryResolve(idle.RelatedIdles[i], out var relIdle) && relIdle.Type == typeof(IIdleAnimation))
+                    return new MemoryStream(file.GetBytes());
+                }
+            }
+
+            throw new FileNotFoundException("Cannot located requested file: " + fileRelativePath);
+        }
+
+        static void CopyRaceForm(IRaceGetter raceForm, ImmutableLoadOrderLinkCache<ISkyrimMod, ISkyrimModGetter> linkCache, SkyrimMod mod, List<string> patterns, string target)
+        {
+            Dictionary<FormKey, FormKey> formMapping = [];
+
+            var dstRace = CopyForm<Race>(raceForm, mod, patterns, target, formMapping);
+
+            if (raceForm.BehaviorGraph?.Male != null)
+            {
+                dstRace.BehaviorGraph.Male!.File = ReplaceNames(raceForm.BehaviorGraph.Male.File, patterns, target);
+            }
+            if (raceForm.SkeletalModel?.Male != null)
+            {
+                dstRace.SkeletalModel!.Male!.File = ReplaceNames(raceForm.SkeletalModel.Male.File, patterns, target);
+            }
+            mod.Races.Add(dstRace);
+            Console.WriteLine($"Retargeted RACE: {raceForm.EditorID} -> {dstRace.EditorID}");
+
+            if (!raceForm.Skin.TryResolve(linkCache, out var srcArmo) || !FindNames(srcArmo.EditorID, patterns))
+                return;
+
+            var dstArmo = CopyForm<Armor>(srcArmo, mod, patterns, target, formMapping);
+            mod.Armors.Add(dstArmo);
+            Console.WriteLine($"Retargeted ARMO: {srcArmo.EditorID} -> {dstArmo.EditorID}");
+
+            foreach (var armaLink in srcArmo.Armature)
+            {
+                if (!armaLink.TryResolve(linkCache, out var arma) || !FindNames(arma.EditorID, patterns))
+                    continue;
+
+                if (!arma.Race.TryResolve(linkCache, out var armaRace) || armaRace.FormKey != raceForm.FormKey)
+                    continue;
+
+                // ARMA
+                var dstArma = CopyForm<ArmorAddon>(arma, mod, patterns, target, formMapping);
+                dstArma.AdditionalRaces.Clear();
+                mod.ArmorAddons.Add(dstArma);
+                Console.WriteLine($"Retargeted ARMA: {arma.EditorID} -> {dstArma.EditorID}");
+
+                if (!arma.FootstepSound.TryResolve(linkCache, out var fsts) || !FindNames(fsts.EditorID, patterns))
+                    continue;
+
+                // FSTS
+                var dstFsts = CopyForm<FootstepSet>(fsts, mod, patterns, target, formMapping);
+                mod.FootstepSets.Add(dstFsts);
+                Console.WriteLine($"Retargeted FSTS: {fsts.EditorID} -> {dstFsts.EditorID}");
+
+                var stepLists = new[]{fsts.WalkForwardFootsteps,
+                                fsts.WalkForwardAlternateFootsteps, fsts.WalkForwardAlternateFootsteps2,
+                                fsts.RunForwardFootsteps, fsts.RunForwardAlternateFootsteps };
+
+                foreach (var fstp in stepLists.SelectMany(x => x).Distinct().ToArray())
+                {
+                    if (!fstp.TryResolve(linkCache, out var fstpRec) || !FindNames(fstpRec.EditorID, patterns))
+                        continue;
+
+                    // FSTP
+                    var dstFstp = CopyForm<Footstep>(fstpRec, mod, patterns, target, formMapping);
+                    dstFstp.Tag = ReplaceNames(fstpRec.Tag, patterns, target);
+                    mod.Footsteps.Add(dstFstp);
+                    Console.WriteLine($"Retargeted FSTP: {fstpRec.EditorID} -> {dstFstp.EditorID}");
+
+                    if (!fstpRec.ImpactDataSet.TryResolve(linkCache, out var ipds) || !FindNames(ipds.EditorID, patterns))
+                        continue;
+
+                    // IPDS
+                    var dstIpds = CopyForm<ImpactDataSet>(ipds, mod, patterns, target, formMapping);
+                    mod.ImpactDataSets.Add(dstIpds);
+                    Console.WriteLine($"Retargeted IPDS: {ipds.EditorID} -> {dstIpds.EditorID}");
+                    // IPCT
+                    foreach (var ipct in dstIpds.Impacts.Select(x => x.Impact).Distinct().ToArray())
                     {
-                        idle.RelatedIdles[i] = outputMod.IdleAnimations.RecordCache[exportedIdles[relIdle.FormKey]].ToLink();
+                        if (!ipct.TryResolve(linkCache, out var ipctRec) || !FindNames(ipctRec.EditorID, patterns))
+                            continue;
+
+                        var dstIpct = CopyForm<Impact>(ipctRec, mod, patterns, target, formMapping);
+                        mod.Impacts.Add(dstIpct);
+                        Console.WriteLine($"Retargeted IPCT: {ipctRec.EditorID} -> {dstIpct.EditorID}");
+
+                        foreach (var sound in new[] { ipctRec.Sound1, ipctRec.Sound2 })
+                        {
+                            if (!sound.TryResolve(linkCache, out var soundRec) || !FindNames(soundRec.EditorID, patterns))
+                                continue;
+
+                            if (soundRec is ISoundMarkerGetter soun)
+                            {
+                                var dstSoun = CopyForm<SoundMarker>(soun, mod, patterns, target, formMapping);
+                                mod.SoundMarkers.Add(dstSoun);
+                                Console.WriteLine($"Retargeted SOUN: {soun.EditorID} -> {dstSoun.EditorID}");
+                            }
+                            else if (soundRec is ISoundDescriptorGetter sndr)
+                            {
+                                var dstSndr = CopyForm<SoundDescriptor>(sndr, mod, patterns, target, formMapping);
+                                mod.SoundDescriptors.Add(dstSndr);
+                                Console.WriteLine($"Retargeted SNDR: {sndr.EditorID} -> {dstSndr.EditorID}");
+                            }
+                        }
                     }
                 }
             }
 
-            outputMod.WriteToBinary($"{Path.Combine(outputDir.FullName,targetName)}.esp");
+            mod.RemapLinks(formMapping);
+        }
+
+        static U CopyForm<U>(ISkyrimMajorRecordGetter formGetter, SkyrimMod mod, List<string> patterns, string target, Dictionary<FormKey, FormKey> mapper)
+            where U : SkyrimMajorRecord
+        {
+            SkyrimMajorRecord dstForm = formGetter.Duplicate(mod.GetNextFormKey());
+            if (!formGetter.EditorID.IsNullOrEmpty())
+                dstForm.EditorID = CreateFormId(formGetter.EditorID, patterns, target);
+
+            if (dstForm is INamed named && named.Name != null)
+            {
+                named.Name = ReplaceNames(named.Name, patterns, target);
+            }
+
+            mapper.Add(formGetter.FormKey, dstForm.FormKey);
+
+            return (U)dstForm;
         }
 
         // TODO: Recursion isn't necessary, also check for behavior name only at top level node?
         static bool CrawlIdleForms(IIdleAnimationGetter parent, ILinkCache cache, HashSet<FormKey> forms, List<string> patterns, bool validChain = false)
         {
+            // We have to get the filename here to make sure 
             if (!validChain &&
-                (parent.Filename != null && FindNames(parent.Filename, patterns)))
+                (parent.Filename != null && FindNames(Path.GetFileName(parent.Filename), patterns)))
             {
                 validChain = true; // copy the rest of this chain
             }
@@ -579,8 +728,10 @@ namespace SECmd.Commands
             return srcEdId;
         }
 
-        static bool FindNames(string text, IList<string> patterns, StringComparison stringComparison = StringComparison.OrdinalIgnoreCase)
+        static bool FindNames(string? text, IList<string> patterns, StringComparison stringComparison = StringComparison.OrdinalIgnoreCase)
         {
+            if (text is null) return false;
+
             foreach (string p in patterns)
             {
                 if (text.Contains(p, stringComparison)) return true;
@@ -621,13 +772,18 @@ namespace SECmd.Commands
         static hkRootLevelContainer? OpenHavokFile(FileInfo inputFile)
         {
             using FileStream rs = inputFile.OpenRead();
-
-            var br = new BinaryReaderEx(rs);
+            return OpenHavokFile(rs);
+        }
+        
+        static hkRootLevelContainer? OpenHavokFile(Stream inputStream)
+        {
+            var br = new BinaryReaderEx(inputStream);
             var des = new PackFileDeserializer();
             var root = (hkRootLevelContainer)des.Deserialize(br);
 
             return root;
         }
+
         static hkRootLevelContainer? OpenHavokFile(FileInfo inputFile, out Dictionary<uint, IHavokObject> parsedObjects)
         {
             using FileStream rs = inputFile.OpenRead();

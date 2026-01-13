@@ -24,9 +24,9 @@ namespace SECmd.AnimData
         #endregion
 
         static string animationDataFolder = "animationdata";
-        static string animationDataMergedFile = "animationdatasinglefile.txt";
+        public static readonly string AnimationDataMergedFile = "animationdatasinglefile.txt";
         static string animationSetDataFolder = "animationsetdata";
-        static string animationSetMergedDataFile = "animationsetdatasinglefile.txt";
+        public static readonly string AnimationSetMergedDataFile = "animationsetdatasinglefile.txt";
 
         AnimDataFile animationData = new();
         AnimSetDataFile animationSetData = new();
@@ -38,7 +38,11 @@ namespace SECmd.AnimData
         Dictionary<(string, string), ClipMovementData> movementMap = [];
         Dictionary<(string, string), List<EventInfo>> eventMap = [];
 
-        
+        public AnimationCache(string meshDir) :
+            this(new(Path.Combine(meshDir, AnimationDataMergedFile)), new(Path.Combine(meshDir, AnimationSetMergedDataFile)))
+        {
+        }
+
         public AnimationCache(FileInfo animDataFile, FileInfo animSetDataFile)
         {
             if (!animDataFile.Exists)
@@ -62,7 +66,7 @@ namespace SECmd.AnimData
             }
             var creature = (CreatureCacheEntry)src;
             ProjectBlock block = (ProjectBlock)creature.Block.Clone();
-            ProjectDataBlock movements = (ProjectDataBlock)creature.Movement.Clone();
+            ProjectDataBlock movements = (ProjectDataBlock)creature.Movement!.Clone();
             ProjectAttackListBlock sets = (ProjectAttackListBlock)creature.AttackList.Clone();
 
             int index = animationData.AddProject(dstProject + ".txt", block, movements);
