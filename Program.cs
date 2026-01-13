@@ -9,7 +9,6 @@ namespace SECmd
         {
             RootCommand root = new("se-cmd utility");
             Commands.RetargetCreature.Register(root);
-            Commands.ExportNif.Register(root);
 
             root.Parse(args).Invoke();
         }
