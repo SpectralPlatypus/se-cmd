@@ -71,6 +71,7 @@ namespace SECmd.Conversion
 
             // Named after the file rather than after any node in the scene (§5.2).
             _model.SetString(root, "Name", _options.RootName);
+            _nodesByName[_options.RootName] = root;
 
             var rootModels = _scene.RootModels().ToList();
             var children = new List<NifItem>();
@@ -102,6 +103,10 @@ namespace SECmd.Conversion
             // Collision sitting directly under the scene root belongs to the root
             // block, and would otherwise be left unattached.
             BuildCollisionFrom(root, 0);
+
+            // Skins are wired up last: a bone is a node elsewhere in the scene, so
+            // they can only be resolved once the whole tree exists.
+            BuildPendingSkins(root);
 
             _model.SetRoots([root]);
             _model.UpdateHeader();
@@ -152,6 +157,7 @@ namespace SECmd.Conversion
             NifItem node = _model.InsertBlock("NiNode");
             _model.SetString(node, "Name", name);
             _model.SetTransform(node, transform);
+            _nodesByName[name] = node;
 
             // Collision found under this node attaches to it rather than becoming a
             // child, so collect it before recursing into the real children.
@@ -655,7 +661,35 @@ namespace SECmd.Conversion
 
             BuildMaterial(shape, holder);
 
+            // Deferred: the bones are nodes elsewhere in the scene and may not have
+            // been converted yet, so skins are wired up once the whole tree is
+            // built.
+            if (FbxSkinIO.ReadSkin(_scene, geometry) is { } skin)
+                _pendingSkins.Add((shape, skin, mesh.Vertices.Count));
+
             return shape;
+        }
+
+        /// <summary>Skins waiting for the whole node tree to exist.</summary>
+        private readonly List<(NifItem Shape, SkinData Skin, int VertexCount)> _pendingSkins = [];
+
+        /// <summary>Nodes by name, for resolving bones.</summary>
+        private readonly Dictionary<string, NifItem> _nodesByName = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Builds every skin once the nodes its bones refer to exist.
+        /// </summary>
+        private void BuildPendingSkins(NifItem root)
+        {
+            foreach ((NifItem shape, SkinData skin, int vertexCount) in _pendingSkins)
+            {
+                var missing = _model.WriteSkin(shape, skin, _nodesByName, root, vertexCount);
+
+                foreach (string bone in missing)
+                    Warnings.Add($"{_model.GetName(shape)}: no node named \"{bone}\", its influence is dropped");
+            }
+
+            _pendingSkins.Clear();
         }
 
         private NifItem BuildNiTriShape(FbxObject geometry, MeshGeometry mesh)

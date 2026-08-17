@@ -225,5 +225,126 @@ namespace SECmd.Tests
             Assert.NotEmpty(skin!.Bones);
             Assert.Contains(skin.Bones, b => b.Weights.Count > 0);
         }
+
+        // --- writing back ------------------------------------------------------
+
+        /// <summary>NIF to FBX and back, for a skinned mesh.</summary>
+        private static NifModel RoundTrip(string name, bool legendary)
+        {
+            NifModel source = Load(name);
+            FbxDocument document = new NifToFbx(source).Convert();
+
+            var converter = new FbxToNif(new FbxScene(document), new FbxToNifOptions
+            {
+                RootName = "skinned",
+                LegendaryEdition = legendary
+            });
+
+            NifModel rebuilt = converter.Convert(Db);
+
+            Assert.Empty(converter.Warnings);
+
+            using var stream = new MemoryStream();
+            rebuilt.Save(stream);
+            stream.Position = 0;
+
+            return NifModel.Load(stream, Db);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void WritesSkinBlocksForEitherEdition(bool legendary)
+        {
+            NifModel model = RoundTrip("TestNifFile_Skinned_SE.nif", legendary);
+
+            Assert.Contains(model.Blocks, b => b.Name == "BSDismemberSkinInstance");
+            Assert.Contains(model.Blocks, b => b.Name == "NiSkinData");
+
+            // Skyrim renders skinned geometry from the partition, so a skin without
+            // one draws as though it had no skeleton at all.
+            Assert.Contains(model.Blocks, b => b.Name == "NiSkinPartition");
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void WrittenSkinReadsBack(bool legendary)
+        {
+            NifModel model = RoundTrip("TestNifFile_Skinned_SE.nif", legendary);
+
+            NifItem shape = model.Blocks.First(b => model.GetSkinInstance(b) is not null);
+            SkinData? skin = model.ReadSkin(shape);
+
+            Assert.NotNull(skin);
+            Assert.NotEmpty(skin!.Bones);
+            Assert.Contains(skin.Bones, b => b.Weights.Count > 0);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void WrittenWeightsStillSumToOne(bool legendary)
+        {
+            NifModel model = RoundTrip("TestNifFile_Skinned_SE.nif", legendary);
+
+            NifItem shape = model.Blocks.First(b => model.GetSkinInstance(b) is not null);
+            SkinData skin = model.ReadSkin(shape)!;
+
+            foreach ((ushort vertex, List<(int Bone, float Weight)> influences) in skin.ByVertex())
+            {
+                float total = influences.Sum(i => i.Weight);
+                Assert.True(Math.Abs(total - 1f) < 0.01f, $"vertex {vertex} sums to {total:G6}");
+            }
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void BoneNamesSurviveTheRoundTrip(bool legendary)
+        {
+            NifModel source = Load("TestNifFile_Skinned_SE.nif");
+            SkinData before = source.ReadSkin(FirstSkinnedShape(source))!;
+
+            NifModel model = RoundTrip("TestNifFile_Skinned_SE.nif", legendary);
+            SkinData after = model.ReadSkin(FirstSkinnedShape(model))!;
+
+            Assert.Equal(
+                before.Bones.Where(b => b.Weights.Count > 0).Select(b => b.Name).OrderBy(n => n),
+                after.Bones.Where(b => b.Weights.Count > 0).Select(b => b.Name).OrderBy(n => n));
+        }
+
+        [Fact]
+        public void BonesReferenceRealNodes()
+        {
+            NifModel model = RoundTrip("TestNifFile_Skinned_SE.nif", legendary: false);
+
+            NifItem skin = model.Blocks.First(b => b.Name == "BSDismemberSkinInstance");
+
+            // A dangling bone link is how a skin silently deforms nothing.
+            var bones = model.GetRefArray(skin, "Bones").ToList();
+
+            Assert.NotEmpty(bones);
+            Assert.All(bones, b => Assert.True(model.BlockInherits(b, "NiNode")));
+
+            // ...and the skeleton root has to resolve too.
+            Assert.NotNull(model.GetRef(skin, "Skeleton Root"));
+        }
+
+        [Fact]
+        public void PartitionCapsInfluencesAtFour()
+        {
+            NifModel model = RoundTrip("TestNifFile_Skinned_SE.nif", legendary: false);
+
+            NifItem partition = model.Blocks.First(b => b.Name == "NiSkinPartition");
+            NifItem entry = model.FindItem(partition, "Partitions")!.Children[0];
+
+            Assert.Equal((uint)NifSkinWriter.MaxInfluences,
+                model.GetUInt(entry, "Num Weights Per Vertex"));
+
+            // Every vertex gets exactly that many slots, padded with zero weights.
+            NifItem weights = model.FindItem(entry, "Vertex Weights")!;
+            Assert.All(weights.Children, w => Assert.Equal(NifSkinWriter.MaxInfluences, w.Children.Count));
+        }
     }
 }
