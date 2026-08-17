@@ -69,13 +69,59 @@ namespace SECmd.Fbx
                 if (scene[binding.DestinationId] is not { Class: "Model" } model)
                     continue;
 
-                AnimCurve[]? channel = ChannelOf(TrackFor(tracks, model.Name), binding.PropertyName);
+                AnimTrack track = TrackFor(tracks, model.Name);
 
-                if (channel is null)
+                if (ChannelOf(track, binding.PropertyName) is { } channel)
+                {
+                    ReadCurvesInto(scene, node, channel);
+                    continue;
+                }
+
+                // Anything else the curve node drives is a named scalar, and the
+                // property's own name is what says which NIF controller it came from.
+                ReadPropertyInto(scene, node, model, track, binding.PropertyName);
+            }
+        }
+
+        /// <summary>
+        /// Reads a scalar property's curve, recovering the NIF identity from its name.
+        /// </summary>
+        /// <remarks>
+        /// The declared type on the model is what distinguishes a boolean track from a
+        /// float one. Losing it would turn an emitter's on/off switch into a rate.
+        /// </remarks>
+        private static void ReadPropertyInto(
+            FbxScene scene, FbxObject node, FbxObject model, AnimTrack track, string name)
+        {
+            (string controllerType, string controllerId, string interpolatorId, string propertyType) =
+                AnimProperty.FromPropertyName(name);
+
+            if (controllerType.Length == 0)
+                return;
+
+            string declared = model.Properties.Find(name)?.Type ?? string.Empty;
+
+            var property = new AnimProperty
+            {
+                Name = name,
+                IsBoolean = declared is "bool" or "Visibility",
+                ControllerType = controllerType,
+                ControllerId = controllerId,
+                InterpolatorId = interpolatorId,
+                PropertyType = propertyType
+            };
+
+            foreach (FbxConnection c in scene.Connections)
+            {
+                if (c.Kind != FbxConnectionKind.ObjectProperty || c.DestinationId != node.Id)
                     continue;
 
-                ReadCurvesInto(scene, node, channel);
+                if (c.PropertyName == $"d|{name}" && scene[c.SourceId] is { Class: "AnimationCurve" } curve)
+                    ReadCurve(curve, property.Curve);
             }
+
+            if (property.Curve.HasKeys)
+                track.Properties.Add(property);
         }
 
         private static AnimTrack TrackFor(Dictionary<string, AnimTrack> tracks, string modelName)

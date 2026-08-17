@@ -89,9 +89,55 @@ namespace SECmd.Fbx
                 AddChannel(scene, layer, model, "T", "Lcl Translation", track.Translation);
                 AddChannel(scene, layer, model, "R", "Lcl Rotation", track.Rotation);
                 AddChannel(scene, layer, model, "S", "Lcl Scaling", track.Scale);
+
+                foreach (AnimProperty property in track.Properties)
+                    AddPropertyChannel(scene, layer, model, property);
             }
 
             return missing;
+        }
+
+        /// <summary>
+        /// Writes a named scalar track as an animated property of a model.
+        /// </summary>
+        /// <remarks>
+        /// The property has to be declared on the model as well as animated. A curve
+        /// bound to a property the model does not have is dropped by most importers
+        /// without complaint, since there is nothing for it to drive.
+        ///
+        /// Scalar properties differ from vector ones in how the curve node addresses
+        /// them: the channel is <c>d|</c> plus the property's own name rather than
+        /// one of <c>d|X</c>, <c>d|Y</c>, <c>d|Z</c>.
+        /// </remarks>
+        private static void AddPropertyChannel(
+            FbxScene scene, FbxObject layer, FbxObject model, AnimProperty property)
+        {
+            if (!property.Curve.HasKeys)
+                return;
+
+            string name = property.Name;
+            double first = property.Curve.Keys[0].Value;
+
+            if (name == AnimProperty.VisibilityName)
+            {
+                // Standard rather than user-defined, so a DCC tool given this
+                // actually hides the object.
+                model.Properties.Set(name, "Visibility", string.Empty, "A", first);
+            }
+            else
+            {
+                model.Properties.Set(
+                    name, property.IsBoolean ? "bool" : "Number", string.Empty, "A+U", first);
+            }
+
+            FbxObject node = scene.AddObject("AnimationCurveNode", name, string.Empty);
+            node.Properties.Set($"d|{name}", "Number", string.Empty, "A", first);
+
+            scene.Connect(node, layer);
+            scene.ConnectToProperty(node, model, name);
+
+            FbxObject curve = AddCurve(scene, property.Curve);
+            scene.ConnectToProperty(curve, node, $"d|{name}");
         }
 
         /// <summary>
