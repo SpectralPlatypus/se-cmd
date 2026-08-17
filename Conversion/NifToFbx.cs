@@ -664,8 +664,11 @@ namespace SECmd.Conversion
         private MeshGeometry? ReadBsTriShapeGeometry(NifItem shape)
         {
             NifItem? vertexData = _model.FindItem(shape, "Vertex Data");
-            NifItem? triangleSource = shape;
-            List<ushort>? vertexMap = null;
+
+            // Each entry is a partition and the vertex map that translates its
+            // triangle indices; a shape holding its own geometry has one entry with
+            // no map.
+            var triangleSources = new List<(NifItem Source, List<ushort>? VertexMap)>();
 
             // A skinned Skyrim SE shape keeps nothing in itself: the vertex data and
             // the triangles both live in the skin partition, and the shape's own
@@ -677,26 +680,31 @@ namespace SECmd.Conversion
                 if (partition is null)
                     return null;
 
+                // The vertex array is shared by every partition; only the triangles
+                // and the maps into it are per partition.
                 vertexData = _model.FindItem(partition, "Vertex Data");
 
-                // Triangles sit inside the partitions, indexed partition-locally,
-                // with a vertex map back to the shared vertex array.
-                NifItem? partitions = _model.FindItem(partition, "Partitions");
-                triangleSource = partitions?.Child(0);
-
-                if (triangleSource is not null && _model.FindItem(triangleSource, "Vertex Map") is { } map)
+                if (_model.FindItem(partition, "Partitions") is { } partitions)
                 {
-                    vertexMap = [];
+                    foreach (NifItem entry in partitions.Children)
+                    {
+                        List<ushort>? map = null;
 
-                    foreach (NifItem entry in map.Children)
-                        vertexMap.Add((ushort)entry.Value.ToUInt());
-                }
+                        if (_model.FindItem(entry, "Vertex Map") is { } mapItem)
+                        {
+                            map = [];
 
-                if (partitions is { Children.Count: > 1 })
-                {
-                    Warnings.Add(
-                        $"{_model.GetName(shape)}: only the first of {partitions.Children.Count} skin partitions is converted");
+                            foreach (NifItem vertex in mapItem.Children)
+                                map.Add((ushort)vertex.Value.ToUInt());
+                        }
+
+                        triangleSources.Add((entry, map));
+                    }
                 }
+            }
+            else
+            {
+                triangleSources.Add((shape, null));
             }
 
             if (vertexData is null || vertexData.Children.Count == 0)
@@ -749,8 +757,15 @@ namespace SECmd.Conversion
                                     ?? new NifColor4(1f, 1f, 1f, 1f));
             }
 
-            if (triangleSource is not null && _model.FindItem(triangleSource, "Triangles") is { } triangles)
+            // Every partition contributes triangles over the shared vertex array, so
+            // the mesh is the union of them all. Converting only the first drops
+            // whole sections of anything split across several, which real armour
+            // routinely is.
+            foreach ((NifItem source, List<ushort>? vertexMap) in triangleSources)
             {
+                if (_model.FindItem(source, "Triangles") is not { } triangles)
+                    continue;
+
                 foreach (NifItem item in triangles.Children)
                 {
                     NifTriangle t = item.Value.Get<NifTriangle>();
