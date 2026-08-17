@@ -492,6 +492,29 @@ namespace SECmd.Nif
             return true;
         }
 
+        /// <summary>
+        /// The name of an enum option given its value, for writing a symbolic name
+        /// into FBX instead of a bare number.
+        /// </summary>
+        public bool TryGetEnumOptionName(string typeName, uint value, out string name)
+        {
+            name = string.Empty;
+
+            if (!_enumOptions.TryGetValue(typeName, out var options))
+                return false;
+
+            foreach (NifEnumOption option in options.Values)
+            {
+                if (option.Value != value)
+                    continue;
+
+                name = option.Name;
+                return true;
+            }
+
+            return false;
+        }
+
         public IReadOnlyCollection<NifEnumOption> GetEnumOptions(string typeName) =>
             _enumOptions.TryGetValue(typeName, out var options) ? options.Values : [];
 
