@@ -30,7 +30,47 @@ namespace SECmd.Havok
         /// </summary>
         /// <returns>The code, or null when generation was not possible.</returns>
         MoppResult? GenerateSimpleMesh(IReadOnlyList<NifVector3> vertices, IReadOnlyList<NifTriangle> triangles);
+
+        /// <summary>
+        /// Builds a whole <c>bhkCompressedMeshShape</c> from one or more geometries,
+        /// which is what a mesh collision shape needs.
+        /// </summary>
+        /// <remarks>
+        /// This is a different job from <see cref="GenerateSimpleMesh"/>: Havok
+        /// chunks and quantises the mesh, so the chunk layout, the transforms and
+        /// the MOPP tree all have to come from the same pass. Only backends that can
+        /// do it return anything; the rest return null.
+        /// </remarks>
+        CompressedMeshResult? GenerateCompressedMesh(IReadOnlyList<MoppGeometry> geometries) => null;
     }
+
+    /// <summary>One geometry going into a compressed mesh shape.</summary>
+    public sealed record MoppGeometry(IReadOnlyList<NifVector3> Vertices, IReadOnlyList<NifTriangle> Triangles);
+
+    /// <summary>A chunk of a compressed mesh shape, as Havok packed it.</summary>
+    public sealed record CompressedMeshChunk(
+        NifVector4 Offset,
+        uint MaterialInfo,
+        ushort TransformIndex,
+        IReadOnlyList<ushort> Vertices,
+        IReadOnlyList<ushort> Indices,
+        IReadOnlyList<ushort> StripLengths,
+        IReadOnlyList<ushort> WeldingInfo);
+
+    /// <summary>A transform referenced by a compressed mesh chunk.</summary>
+    public sealed record CompressedMeshTransform(NifVector4 Translation, NifQuat Rotation);
+
+    /// <summary>
+    /// Everything a <c>bhkCompressedMeshShape</c> and its data block need.
+    /// </summary>
+    public sealed record CompressedMeshResult(
+        MoppResult Mopp,
+        NifVector4 BoundsMin,
+        NifVector4 BoundsMax,
+        IReadOnlyList<NifVector4> BigVertices,
+        IReadOnlyList<(uint A, uint B, uint C, uint Material, uint WeldingInfo)> BigTriangles,
+        IReadOnlyList<CompressedMeshTransform> Transforms,
+        IReadOnlyList<CompressedMeshChunk> Chunks);
 
     /// <summary>
     /// A generated MOPP tree, with the quantisation it was built against and the

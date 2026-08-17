@@ -157,6 +157,241 @@ namespace SECmd.Havok
             return ParseSimpleMeshOutput(output);
         }
 
+        /// <inheritdoc/>
+        public CompressedMeshResult? GenerateCompressedMesh(IReadOnlyList<MoppGeometry> geometries)
+        {
+            if (!IsAvailable || geometries.Count == 0)
+                return null;
+
+            string output = Run("-ccm", BuildCompressedMeshInput(geometries));
+
+            return ParseCompressedMeshOutput(output);
+        }
+
+        /// <summary>
+        /// Serialises geometries into mopper's <c>-ccm</c> input: a geometry count,
+        /// then per geometry a vertex list and a triangle list.
+        /// </summary>
+        internal static string BuildCompressedMeshInput(IReadOnlyList<MoppGeometry> geometries)
+        {
+            var text = new StringBuilder();
+
+            text.Append(geometries.Count).Append('\n');
+
+            foreach (MoppGeometry geometry in geometries)
+            {
+                text.Append(geometry.Vertices.Count).Append('\n');
+
+                foreach (NifVector3 v in geometry.Vertices)
+                {
+                    text.Append(Format(v.X)).Append(' ')
+                        .Append(Format(v.Y)).Append(' ')
+                        .Append(Format(v.Z)).Append('\n');
+                }
+
+                text.Append(geometry.Triangles.Count).Append('\n');
+
+                foreach (NifTriangle t in geometry.Triangles)
+                    text.Append(t.V1).Append(' ').Append(t.V2).Append(' ').Append(t.V3).Append('\n');
+            }
+
+            return text.ToString();
+        }
+
+        /// <summary>
+        /// Parses mopper's <c>-ccm</c> output, which is the whole compressed mesh
+        /// shape rather than just a MOPP tree.
+        /// </summary>
+        /// <remarks>
+        /// One quirk to undo: mopper prints the <em>last</em> MOPP byte first, then
+        /// bytes 0..n-2. Reading it in order gives a rotated tree that Havok will
+        /// not accept.
+        /// </remarks>
+        internal static CompressedMeshResult? ParseCompressedMeshOutput(string output)
+        {
+            var reader = new NumberReader(output);
+
+            if (!reader.TryFloat(out float ox) || !reader.TryFloat(out float oy) || !reader.TryFloat(out float oz)
+                || !reader.TryFloat(out float scale) || !reader.TryInt(out int codeLength))
+            {
+                return null;
+            }
+
+            if (codeLength <= 0)
+                return null;
+
+            byte[] code = new byte[codeLength];
+
+            // The last byte comes first.
+            if (!reader.TryInt(out int lastByte))
+                return null;
+
+            code[codeLength - 1] = (byte)lastByte;
+
+            for (int i = 0; i < codeLength - 1; i++)
+            {
+                if (!reader.TryInt(out int value))
+                    return null;
+
+                code[i] = (byte)value;
+            }
+
+            if (!reader.TryVector4(out NifVector4 boundsMin) || !reader.TryVector4(out NifVector4 boundsMax))
+                return null;
+
+            if (!reader.TryInt(out int bigVertexCount))
+                return null;
+
+            var bigVertices = new List<NifVector4>(Math.Max(0, bigVertexCount));
+
+            for (int i = 0; i < bigVertexCount; i++)
+            {
+                if (!reader.TryVector4(out NifVector4 v))
+                    return null;
+
+                bigVertices.Add(v);
+            }
+
+            if (!reader.TryInt(out int bigTriangleCount))
+                return null;
+
+            var bigTriangles = new List<(uint, uint, uint, uint, uint)>(Math.Max(0, bigTriangleCount));
+
+            for (int i = 0; i < bigTriangleCount; i++)
+            {
+                if (!reader.TryUInt(out uint a) || !reader.TryUInt(out uint b) || !reader.TryUInt(out uint c)
+                    || !reader.TryUInt(out uint material) || !reader.TryUInt(out uint welding))
+                {
+                    return null;
+                }
+
+                bigTriangles.Add((a, b, c, material, welding));
+            }
+
+            if (!reader.TryInt(out int transformCount))
+                return null;
+
+            var transforms = new List<CompressedMeshTransform>(Math.Max(0, transformCount));
+
+            for (int i = 0; i < transformCount; i++)
+            {
+                if (!reader.TryVector4(out NifVector4 translation)
+                    || !reader.TryFloat(out float rx) || !reader.TryFloat(out float ry)
+                    || !reader.TryFloat(out float rz) || !reader.TryFloat(out float rw))
+                {
+                    return null;
+                }
+
+                transforms.Add(new CompressedMeshTransform(translation, new NifQuat(rw, rx, ry, rz)));
+            }
+
+            if (!reader.TryInt(out int chunkCount))
+                return null;
+
+            var chunks = new List<CompressedMeshChunk>(Math.Max(0, chunkCount));
+
+            for (int i = 0; i < chunkCount; i++)
+            {
+                if (!reader.TryVector4(out NifVector4 offset)
+                    || !reader.TryUInt(out uint materialInfo)
+                    || !reader.TryUInt(out _)                      // a hard-coded 65535
+                    || !reader.TryUInt(out uint transformIndex))
+                {
+                    return null;
+                }
+
+                if (!TryReadUShortList(reader, out var vertices)
+                    || !TryReadUShortList(reader, out var indices)
+                    || !TryReadUShortList(reader, out var stripLengths)
+                    || !TryReadUShortList(reader, out var welding))
+                {
+                    return null;
+                }
+
+                chunks.Add(new CompressedMeshChunk(
+                    offset, materialInfo, (ushort)transformIndex, vertices, indices, stripLengths, welding));
+            }
+
+            var mopp = new MoppResult(code, new NifVector3(ox, oy, oz), scale, []);
+
+            return new CompressedMeshResult(
+                mopp, boundsMin, boundsMax, bigVertices, bigTriangles, transforms, chunks);
+        }
+
+        private static bool TryReadUShortList(NumberReader reader, out List<ushort> values)
+        {
+            values = [];
+
+            if (!reader.TryInt(out int count) || count < 0)
+                return false;
+
+            for (int i = 0; i < count; i++)
+            {
+                if (!reader.TryUInt(out uint value))
+                    return false;
+
+                values.Add((ushort)value);
+            }
+
+            return true;
+        }
+
+        /// <summary>Walks mopper's one-number-per-line output.</summary>
+        private sealed class NumberReader
+        {
+            private readonly string[] _lines;
+            private int _at;
+
+            public NumberReader(string text) =>
+                _lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            public bool TryFloat(out float value)
+            {
+                value = 0;
+
+                if (_at >= _lines.Length)
+                    return false;
+
+                bool ok = float.TryParse(_lines[_at], NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+                _at++;
+                return ok;
+            }
+
+            public bool TryInt(out int value)
+            {
+                value = 0;
+
+                if (_at >= _lines.Length)
+                    return false;
+
+                bool ok = int.TryParse(_lines[_at], NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+                _at++;
+                return ok;
+            }
+
+            public bool TryUInt(out uint value)
+            {
+                value = 0;
+
+                if (!TryInt(out int signed))
+                    return false;
+
+                value = unchecked((uint)signed);
+                return true;
+            }
+
+            public bool TryVector4(out NifVector4 value)
+            {
+                value = new NifVector4();
+
+                if (!TryFloat(out float x) || !TryFloat(out float y) || !TryFloat(out float z) || !TryFloat(out float w))
+                    return false;
+
+                value = new NifVector4(x, y, z, w);
+                return true;
+            }
+        }
+
         /// <summary>
         /// Serialises a mesh into mopper's input format: a vertex count and vertices,
         /// a triangle count and triangles, then a zero material-index count.
