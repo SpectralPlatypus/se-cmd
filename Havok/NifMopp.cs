@@ -126,21 +126,34 @@ namespace SECmd.Havok
             }
         }
 
+        /// <summary>
+        /// Where the library is looked for, in order: an explicitly configured
+        /// directory, the current working directory, and the directory holding the
+        /// executable.
+        /// </summary>
+        /// <remarks>
+        /// The working directory comes first so that a copy sitting next to the
+        /// files being converted wins over an installed one, which is what someone
+        /// dropping the DLL into their working folder expects. The executable's own
+        /// directory is where NifSkope keeps it. If none of them has it, the
+        /// platform loader gets a bare name and applies its own search path.
+        /// </remarks>
+        public static IEnumerable<string> SearchPaths()
+        {
+            if (SearchDirectory is { Length: > 0 } configured)
+                yield return Path.Combine(configured, LibraryName);
+
+            yield return Path.Combine(Environment.CurrentDirectory, LibraryName);
+            yield return Path.Combine(AppContext.BaseDirectory, LibraryName);
+        }
+
         private static bool TryLoadLibrary(out nint handle)
         {
-            if (SearchDirectory is { Length: > 0 } directory)
+            foreach (string candidate in SearchPaths())
             {
-                string candidate = Path.Combine(directory, LibraryName);
-
                 if (File.Exists(candidate) && NativeLibrary.TryLoad(candidate, out handle))
                     return true;
             }
-
-            // Alongside the executable, which is where NifSkope keeps it.
-            string local = Path.Combine(AppContext.BaseDirectory, LibraryName);
-
-            if (File.Exists(local) && NativeLibrary.TryLoad(local, out handle))
-                return true;
 
             return NativeLibrary.TryLoad(LibraryName, out handle);
         }

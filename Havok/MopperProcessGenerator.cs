@@ -87,17 +87,38 @@ namespace SECmd.Havok
             }
         }
 
+        /// <summary>
+        /// Where mopper.exe is looked for, in order: an explicitly configured path,
+        /// the current working directory, then the directory holding the executable.
+        /// </summary>
+        /// <remarks>
+        /// The working directory comes first so a copy sitting next to the files
+        /// being converted wins over an installed one. If none of them has it, PATH
+        /// is searched.
+        /// </remarks>
+        public IEnumerable<string> SearchPaths()
+        {
+            if (MopperPath is { Length: > 0 } configured)
+            {
+                yield return configured;
+                yield break;
+            }
+
+            yield return Path.Combine(Environment.CurrentDirectory, "mopper.exe");
+            yield return Path.Combine(AppContext.BaseDirectory, "mopper.exe");
+        }
+
         private string? ResolveMopper()
         {
-            if (MopperPath is { Length: > 0 } explicitPath)
-                return File.Exists(explicitPath) ? explicitPath : null;
+            foreach (string candidate in SearchPaths())
+            {
+                if (File.Exists(candidate))
+                    return candidate;
+            }
 
-            string local = Path.Combine(AppContext.BaseDirectory, "mopper.exe");
-
-            if (File.Exists(local))
-                return local;
-
-            return ResolveOnPath("mopper.exe");
+            // An explicit path that does not exist is an error, not a reason to go
+            // hunting on PATH for something the caller did not ask for.
+            return MopperPath is { Length: > 0 } ? null : ResolveOnPath("mopper.exe");
         }
 
         private static string? ResolveOnPath(string fileName)

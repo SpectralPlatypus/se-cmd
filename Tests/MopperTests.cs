@@ -136,5 +136,32 @@ namespace SECmd.Tests
             Assert.NotEmpty(result!.Code);
             Assert.True(result.Scale > 0);
         }
+
+        [Fact]
+        public void LooksInTheWorkingDirectoryBeforeTheExecutableDirectory()
+        {
+            var generator = new MopperProcessGenerator();
+            var paths = generator.SearchPaths().ToList();
+
+            Assert.Equal(Path.Combine(Environment.CurrentDirectory, "mopper.exe"), paths[0]);
+            Assert.Equal(Path.Combine(AppContext.BaseDirectory, "mopper.exe"), paths[1]);
+        }
+
+        [Fact]
+        public void AnExplicitPathIsTheOnlyOneConsidered()
+        {
+            var generator = new MopperProcessGenerator { MopperPath = "/somewhere/mopper.exe" };
+
+            Assert.Equal(["/somewhere/mopper.exe"], generator.SearchPaths());
+        }
+
+        [Fact]
+        public void NifMoppLooksInTheWorkingDirectoryToo()
+        {
+            var paths = NifMopp.SearchPaths().ToList();
+
+            Assert.Contains(Path.Combine(Environment.CurrentDirectory, "NifMopp.dll"), paths);
+            Assert.Contains(Path.Combine(AppContext.BaseDirectory, "NifMopp.dll"), paths);
+        }
     }
 }
