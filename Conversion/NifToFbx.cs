@@ -111,10 +111,207 @@ namespace SECmd.Conversion
             else
                 scene.Connect(node, parent);
 
+            if (_options.ExportCollision)
+                ConvertCollision(scene, block, node);
+
             foreach (NifItem child in _model.GetChildren(block))
                 ConvertNode(scene, child, node);
 
             return node;
+        }
+
+        /// <summary>
+        /// Emits a node's Havok collision as tessellated geometry.
+        /// </summary>
+        /// <remarks>
+        /// The rigid body becomes a node suffixed <c>_rb</c>, which is the marker
+        /// the import side keys off (spec §3.1), and its shape becomes a mesh under
+        /// it. A body's transform is a *world* transform even when parented, so it
+        /// is written as-is rather than composed with anything.
+        /// </remarks>
+        private void ConvertCollision(FbxScene scene, NifItem block, FbxObject parent)
+        {
+            NifItem? collision = _model.GetRef(block, "Collision Object");
+
+            if (collision is null)
+                return;
+
+            NifItem? body = _model.GetRef(collision, "Body");
+
+            if (body is null)
+                return;
+
+            string name = NameEncoding.Sanitize(_model.GetName(block));
+
+            if (name.Length == 0)
+                name = block.Name;
+
+            bool isPhantom = _model.BlockInherits(body, "bhkSimpleShapePhantom");
+            string suffix = isPhantom ? "_sp" : "_rb";
+
+            NifTransform transform = NifTransform.Identity;
+
+            if (!isPhantom && _model.FindItem(body, "Translation") is { } translation)
+            {
+                // Havok works in metres; the rest of the file is in Skyrim units.
+                NifVector4 t = translation.Value.Get<NifVector4>();
+                var scaled = new NifVector3(
+                    t.X * ShapeTessellator.BhkScaleFactor,
+                    t.Y * ShapeTessellator.BhkScaleFactor,
+                    t.Z * ShapeTessellator.BhkScaleFactor);
+
+                NifQuat rotation = _model.FindItem(body, "Rotation")?.Value.Get<NifQuat>() ?? NifQuat.Identity;
+                transform = new NifTransform(scaled, RotationFromQuaternion(rotation), 1f);
+            }
+
+            FbxObject bodyNode = FbxMeshWriter.AddModel(scene, name + suffix, "Null", transform);
+            scene.Connect(bodyNode, parent);
+
+            NifItem? shape = _model.GetRef(body, "Shape");
+
+            if (shape is null)
+            {
+                Warnings.Add($"{name}: collision body has no shape");
+                return;
+            }
+
+            ConvertShape(scene, shape, bodyNode, name + suffix);
+        }
+
+        /// <summary>
+        /// Walks a shape tree, emitting a mesh for each leaf and a node for each
+        /// container, with the suffixes the import side recognises.
+        /// </summary>
+        private void ConvertShape(FbxScene scene, NifItem shape, FbxObject parent, string parentName, int depth = 0)
+        {
+            if (depth > 16)
+            {
+                Warnings.Add($"{parentName}: collision shape nests too deeply, stopping");
+                return;
+            }
+
+            // Containers: emit a node and recurse.
+            string? containerSuffix = shape.Name switch
+            {
+                "bhkTransformShape" or "bhkConvexTransformShape" => "_transform",
+                "bhkListShape" => "_list",
+                "bhkConvexListShape" => "_convex_list",
+                "bhkMoppBvTreeShape" => "_mopp",
+                _ => null
+            };
+
+            if (containerSuffix is not null)
+            {
+                string name = parentName + containerSuffix;
+                FbxObject node = FbxMeshWriter.AddModel(scene, name, "Null", NifTransform.Identity);
+                scene.Connect(node, parent);
+
+                // A MOPP tree just wraps the shape it indexes; the tree itself is
+                // regenerated on import and carries nothing to convert.
+                foreach (NifItem child in ChildShapesOf(shape))
+                    ConvertShape(scene, child, node, name, depth + 1);
+
+                return;
+            }
+
+            MeshGeometry? mesh = TessellateShape(shape);
+
+            if (mesh is null)
+            {
+                Warnings.Add($"{parentName}: {shape.Name} is not a shape this converts yet");
+                return;
+            }
+
+            if (mesh.Triangles.Count == 0)
+            {
+                Warnings.Add($"{parentName}: {shape.Name} tessellated to nothing");
+                return;
+            }
+
+            ShapeTessellator.Scale(mesh, ShapeTessellator.BhkScaleFactor);
+
+            string shapeName = parentName + ShapeSuffix(shape.Name);
+            FbxObject holder = FbxMeshWriter.AddModel(scene, shapeName, "Mesh", NifTransform.Identity);
+            scene.Connect(holder, parent);
+
+            FbxObject geometry = FbxMeshWriter.AddGeometry(scene, shapeName + "_geometry", mesh);
+            scene.Connect(geometry, holder);
+        }
+
+        private IEnumerable<NifItem> ChildShapesOf(NifItem shape)
+        {
+            if (_model.GetRef(shape, "Shape") is { } single)
+                yield return single;
+
+            foreach (NifItem child in _model.GetRefArray(shape, "Sub Shapes"))
+                yield return child;
+        }
+
+        private static string ShapeSuffix(string blockName) => blockName switch
+        {
+            "bhkSphereShape" => "_sphere",
+            "bhkBoxShape" => "_box",
+            "bhkCapsuleShape" => "_capsule",
+            "bhkConvexVerticesShape" => "_convex",
+            "bhkCompressedMeshShape" => "_mesh",
+            _ => "_shape"
+        };
+
+        /// <summary>Tessellates a leaf shape, or null when it is not one we handle.</summary>
+        private MeshGeometry? TessellateShape(NifItem shape) => shape.Name switch
+        {
+            "bhkSphereShape" => ShapeTessellator.Sphere(
+                _model.FindItem(shape, "Radius")?.Value.ToFloat() ?? 0f),
+
+            "bhkBoxShape" => ShapeTessellator.Box(
+                _model.FindItem(shape, "Dimensions")?.Value.Get<NifVector3>() ?? new NifVector3()),
+
+            "bhkCapsuleShape" => ShapeTessellator.Capsule(
+                _model.FindItem(shape, "First Point")?.Value.Get<NifVector3>() ?? new NifVector3(),
+                _model.FindItem(shape, "Second Point")?.Value.Get<NifVector3>() ?? new NifVector3(),
+                _model.FindItem(shape, "Radius")?.Value.ToFloat() ?? 0f),
+
+            "bhkConvexVerticesShape" => ShapeTessellator.ConvexHull(ReadConvexVertices(shape)),
+
+            _ => null
+        };
+
+        /// <summary>
+        /// A convex shape's vertices, which are stored as Vector4 with the fourth
+        /// component unused.
+        /// </summary>
+        private List<NifVector3> ReadConvexVertices(NifItem shape)
+        {
+            var points = new List<NifVector3>();
+
+            if (_model.FindItem(shape, "Vertices") is not { } vertices)
+                return points;
+
+            foreach (NifItem item in vertices.Children)
+            {
+                NifVector4 v = item.Value.Get<NifVector4>();
+                points.Add(new NifVector3(v.X, v.Y, v.Z));
+            }
+
+            return points;
+        }
+
+        private static NifMatrix33 RotationFromQuaternion(NifQuat q)
+        {
+            float x = q.X, y = q.Y, z = q.Z, w = q.W;
+
+            return new NifMatrix33
+            {
+                M11 = 1f - 2f * (y * y + z * z),
+                M12 = 2f * (x * y + z * w),
+                M13 = 2f * (x * z - y * w),
+                M21 = 2f * (x * y - z * w),
+                M22 = 1f - 2f * (x * x + z * z),
+                M23 = 2f * (y * z + x * w),
+                M31 = 2f * (x * z + y * w),
+                M32 = 2f * (y * z - x * w),
+                M33 = 1f - 2f * (x * x + y * y)
+            };
         }
 
         private void ConvertGeometry(FbxScene scene, NifItem shape, FbxObject? parent)
