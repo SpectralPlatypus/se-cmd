@@ -176,20 +176,13 @@ namespace SECmd.Nif
     [StructLayout(LayoutKind.Sequential)]
     public struct BSVertexDesc(ulong value)
     {
-        private const ulong MaskVert = 0xFFFFFFFFFFFFFFF0;
-        private const ulong MaskUVs = 0xFFFFFFFFFFFFFF0F;
-        private const ulong MaskNBT = 0xFFFFFFFFFFFFF0FF;
-        private const ulong MaskSkCol = 0xFFFFFFFFFFFF0FFF;
-        private const ulong MaskData = 0xFFFFFFFFFFF0FFFF;
-        private const ulong MaskOffset = 0xFFFFFF0000000000;
-
         public ulong Value = value;
 
         /// <summary>The attribute flags, which live in the nibbles above bit 44.</summary>
         public VertexFlags Flags
         {
             readonly get => (VertexFlags)((Value >> 44) & 0xFFFF);
-            set => Value = (Value & MaskOffset & ~(0xFFFFUL << 44)) | ((ulong)value << 44);
+            set => Value = (Value & ~(0xFFFFUL << 44)) | ((ulong)value << 44);
         }
 
         public readonly bool HasFlag(VertexFlags flag) => (Flags & flag) != 0;
@@ -198,35 +191,45 @@ namespace SECmd.Nif
         public uint VertexSize
         {
             readonly get => (uint)((Value & 0xF) * 4);
-            set => Value = (Value & MaskVert) | ((ulong)value >> 2);
+            set => Value = (Value & ~0xFUL) | (((ulong)value / 4) & 0xF);
         }
 
-        /// <summary>Total size of the dynamic vertex data, in bytes.</summary>
-        public uint DataSize
+        /// <summary>
+        /// The byte offset of one attribute within a vertex.
+        /// </summary>
+        /// <remarks>
+        /// The low nibble is the stride, and each nibble after it holds one
+        /// attribute's offset, indexed by its <see cref="VertexAttribute"/> slot.
+        /// Both are stored divided by four.
+        ///
+        /// Verified against real Skyrim SE meshes: a static one packs to
+        /// 0x1B00000650407, giving position at 0, UV at 16, normal at 20 and
+        /// tangent at 24 for a stride of 28; a skinned one to 0x5B0007065040A,
+        /// adding skinning at 28 for a stride of 40.
+        /// </remarks>
+        public readonly uint OffsetOf(int attribute) =>
+            (uint)((Value >> (4 * (attribute + 1)) & 0xF) * 4);
+
+        /// <summary>Sets one attribute's byte offset.</summary>
+        public void SetOffsetOf(int attribute, uint byteOffset)
         {
-            readonly get => (uint)(((Value >> 16) & 0xF) * 4);
-            set => Value = (Value & MaskData) | (((ulong)value >> 2) << 16);
+            int shift = 4 * (attribute + 1);
+            Value = (Value & ~(0xFUL << shift)) | ((((ulong)byteOffset / 4) & 0xF) << shift);
         }
 
-        public uint UVOffset
-        {
-            readonly get => (uint)(((Value >> 4) & 0xF) * 4);
-            set => Value = (Value & MaskUVs) | (((ulong)value >> 2) << 4);
-        }
+        public readonly uint VertexOffset => OffsetOf(VertexAttribute.Position);
 
-        public uint NormalOffset
-        {
-            readonly get => (uint)(((Value >> 8) & 0xF) * 4);
-            set => Value = (Value & MaskNBT) | (((ulong)value >> 2) << 8);
-        }
+        public readonly uint UVOffset => OffsetOf(VertexAttribute.TexCoord0);
 
-        public uint ColorOffset
-        {
-            readonly get => (uint)(((Value >> 12) & 0xF) * 4);
-            set => Value = (Value & MaskSkCol) | (((ulong)value >> 2) << 12);
-        }
+        public readonly uint NormalOffset => OffsetOf(VertexAttribute.Normal);
 
-        public override readonly string ToString() => $"0x{Value:X16} ({Flags})";
+        public readonly uint TangentOffset => OffsetOf(VertexAttribute.Binormal);
+
+        public readonly uint ColorOffset => OffsetOf(VertexAttribute.Color);
+
+        public readonly uint SkinningOffset => OffsetOf(VertexAttribute.Skinning);
+
+        public override readonly string ToString() => $"0x{Value:X16} ({Flags}, stride {VertexSize})";
     }
 
     /// <summary>

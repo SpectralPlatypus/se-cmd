@@ -20,8 +20,24 @@ namespace SECmd.Conversion
 
         public uint UserVersion { get; set; } = 12;
 
-        /// <summary>Bethesda stream version. 83 is Skyrim LE, 100 Skyrim SE.</summary>
-        public uint BSVersion { get; set; } = 83;
+        /// <summary>
+        /// Target Skyrim Legendary Edition rather than Special Edition.
+        /// </summary>
+        /// <remarks>
+        /// nif.xml distinguishes the two only by the Bethesda stream version: both
+        /// are file version 20.2.0.7 with user version 12, LE being
+        /// <c>V20_2_0_7_SKY</c> at 83 and SE <c>V20_2_0_7_SSE</c> at 100.
+        ///
+        /// That one number changes which geometry block is legal. BSTriShape is
+        /// declared <c>versions="#SSE# #FO4# #F76#"</c> and so does not exist in LE,
+        /// while NiTriShape is unrestricted. Writing NiTriShape into an SE file
+        /// parses, but is not what the engine expects — converting between the two
+        /// is the entire purpose of SSE NIF Optimizer.
+        /// </remarks>
+        public bool LegendaryEdition { get; set; }
+
+        /// <summary>The Bethesda stream version implied by the target edition.</summary>
+        public uint BSVersion => LegendaryEdition ? 83u : 100u;
     }
 
     /// <summary>
@@ -629,18 +645,190 @@ namespace SECmd.Conversion
             if (!mesh.HasNormals)
                 mesh.RecalculateNormals();
 
+            // BSTriShape does not exist before Skyrim SE, so the edition decides
+            // which geometry block to emit.
+            NifItem shape = _options.LegendaryEdition
+                ? BuildNiTriShape(geometry, mesh)
+                : BuildBsTriShape(geometry, mesh);
+
+            _model.SetTransform(shape, transform);
+
+            BuildMaterial(shape, holder);
+
+            return shape;
+        }
+
+        private NifItem BuildNiTriShape(FbxObject geometry, MeshGeometry mesh)
+        {
             NifItem shape = _model.InsertBlock("NiTriShape");
             _model.SetString(shape, "Name", NameEncoding.Unsanitize(geometry.Name));
-            _model.SetTransform(shape, transform);
 
             NifItem data = _model.InsertBlock("NiTriShapeData");
             WriteGeometryData(data, mesh);
 
             _model.SetRef(shape, "Data", data);
 
-            BuildMaterial(shape, holder);
+            return shape;
+        }
+
+        /// <summary>
+        /// Builds a <c>BSTriShape</c>, which packs its vertices inline rather than
+        /// referencing a data block.
+        /// </summary>
+        /// <remarks>
+        /// The layout is described by <c>Vertex Desc</c>: its top bits say which
+        /// attributes each vertex carries, and its low nibbles record the stride and
+        /// the offset of each attribute within a vertex. The array's fields are
+        /// conditional on those same flags, so the descriptor has to be written
+        /// before the array is sized or the elements come out the wrong shape.
+        /// </remarks>
+        private NifItem BuildBsTriShape(FbxObject geometry, MeshGeometry mesh)
+        {
+            NifItem shape = _model.InsertBlock("BSTriShape");
+            _model.SetString(shape, "Name", NameEncoding.Unsanitize(geometry.Name));
+
+            var descriptor = BuildVertexDescriptor(mesh);
+
+            _model.FindItem(shape, "Vertex Desc")?.Value.SetCount(descriptor.Value);
+
+            SetCount(shape, "Num Vertices", (uint)mesh.Vertices.Count);
+            SetCount(shape, "Num Triangles", (uint)mesh.Triangles.Count);
+
+            // Stored rather than derived, though nif.xml gives the formula.
+            SetCount(shape, "Data Size",
+                (uint)(descriptor.VertexSize * mesh.Vertices.Count + mesh.Triangles.Count * 6));
+
+            (NifVector3 center, float radius) = mesh.ComputeBoundingSphere();
+            _model.FindItem(shape, @"Bounding Sphere\Center")?.Value.Set(center);
+            _model.FindItem(shape, @"Bounding Sphere\Radius")?.Value.SetFloat(radius);
+
+            // The descriptor is set, so sizing now produces elements with the right
+            // fields present.
+            if (_model.FindItem(shape, "Vertex Data") is { } vertexData)
+            {
+                vertexData.InvalidateConditionsRecursive();
+                _model.UpdateArraySize(vertexData);
+
+                for (int i = 0; i < mesh.Vertices.Count && i < vertexData.Children.Count; i++)
+                    WriteVertex(vertexData.Children[i], mesh, i);
+            }
+
+            if (_model.FindItem(shape, "Triangles") is { } triangles)
+            {
+                triangles.InvalidateConditionsRecursive();
+                _model.UpdateArraySize(triangles);
+
+                for (int i = 0; i < mesh.Triangles.Count && i < triangles.Children.Count; i++)
+                    triangles.Children[i].Value.Set(mesh.Triangles[i]);
+            }
 
             return shape;
+        }
+
+        /// <summary>Writes one packed vertex.</summary>
+        private void WriteVertex(NifItem vertex, MeshGeometry mesh, int index)
+        {
+            _model.FindItem(vertex, "Vertex")?.Value.Set(mesh.Vertices[index]);
+
+            if (mesh.HasUvs && index < mesh.Uvs.Count)
+            {
+                NifVector2 uv = mesh.Uvs[index];
+
+                // Back to NIF's V direction.
+                _model.FindItem(vertex, "UV")?.Value.Set(new NifVector2(uv.X, 1f - uv.Y));
+            }
+
+            if (mesh.HasNormals && index < mesh.Normals.Count)
+                _model.FindItem(vertex, "Normal")?.Value.Set(mesh.Normals[index]);
+
+            if (mesh.HasTangents && index < mesh.Tangents.Count)
+            {
+                _model.FindItem(vertex, "Tangent")?.Value.Set(mesh.Tangents[index]);
+
+                // The bitangent is split across three lanes: X sits beside the
+                // position, Y and Z beside the normal and tangent.
+                NifVector3 bitangent = mesh.Bitangents[index];
+
+                _model.FindItem(vertex, "Bitangent X")?.Value.SetFloat(bitangent.X);
+                _model.FindItem(vertex, "Bitangent Y")?.Value.SetCount(SNormToByte(bitangent.Y));
+                _model.FindItem(vertex, "Bitangent Z")?.Value.SetCount(SNormToByte(bitangent.Z));
+            }
+
+            if (mesh.HasColors && index < mesh.Colors.Count)
+                _model.FindItem(vertex, "Vertex Colors")?.Value.Set(mesh.Colors[index]);
+        }
+
+        private static uint SNormToByte(float value) =>
+            (uint)Math.Clamp(MathF.Round((value + 1f) / 2f * 255f), 0f, 255f);
+
+        /// <summary>
+        /// Works out the vertex descriptor for a mesh: which attributes are present,
+        /// how large a vertex is, and where each attribute sits inside one.
+        /// </summary>
+        private static (ulong Value, int VertexSize) BuildVertexDescriptor(MeshGeometry mesh)
+        {
+            var flags = VertexFlags.Vertex;
+
+            if (mesh.HasUvs)
+                flags |= VertexFlags.UV;
+
+            if (mesh.HasNormals)
+                flags |= VertexFlags.Normal;
+
+            if (mesh.HasTangents)
+                flags |= VertexFlags.Tangent;
+
+            if (mesh.HasColors)
+                flags |= VertexFlags.Colors;
+
+            // Field order and sizes follow BSVertexDataSSE: a full-precision
+            // position, a float taking the fourth lane (the bitangent's X),
+            // half-precision UVs, then signed bytes for the normal and tangent with
+            // the rest of the bitangent packed into their spare lanes.
+            var offsets = new int[16];
+            int offset = 0;
+
+            offsets[VertexAttribute.Position] = offset;
+            offset += 16; // position and the bitangent's X lane
+
+            if (mesh.HasUvs)
+            {
+                offsets[VertexAttribute.TexCoord0] = offset;
+                offset += 4;
+            }
+
+            if (mesh.HasNormals)
+            {
+                offsets[VertexAttribute.Normal] = offset;
+                offset += 4;
+            }
+
+            if (mesh.HasTangents)
+            {
+                offsets[VertexAttribute.Binormal] = offset;
+                offset += 4;
+            }
+
+            if (mesh.HasColors)
+            {
+                offsets[VertexAttribute.Color] = offset;
+                offset += 4;
+            }
+
+            int vertexSize = offset;
+
+            // The low nibble is the stride, and each nibble after it is one
+            // attribute's byte offset, indexed by its VertexAttribute slot. Both
+            // are stored divided by four. Verified against real SE meshes: a static
+            // one packs to 0x1B00000650407 and a skinned one to 0x5B0007065040A.
+            ulong value = (ulong)(vertexSize / 4) & 0xF;
+
+            for (int attribute = 0; attribute <= VertexAttribute.EyeData; attribute++)
+                value |= ((ulong)(offsets[attribute] / 4) & 0xF) << (4 * (attribute + 1));
+
+            value |= (ulong)flags << 44;
+
+            return (value, vertexSize);
         }
 
         /// <summary>Fills a <c>NiTriShapeData</c> from the neutral mesh.</summary>

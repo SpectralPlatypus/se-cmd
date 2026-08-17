@@ -22,7 +22,8 @@ namespace SECmd.Tests
 
             var converter = new FbxToNif(new FbxScene(document), new FbxToNifOptions
             {
-                RootName = Path.GetFileNameWithoutExtension(nif)
+                RootName = Path.GetFileNameWithoutExtension(nif),
+                LegendaryEdition = true
             });
 
             NifModel rebuilt = converter.Convert(Db);

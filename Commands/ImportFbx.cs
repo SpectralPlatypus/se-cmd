@@ -37,10 +37,11 @@ namespace SECmd.Commands
                 DefaultValueFactory = _ => false
             };
 
-            Option<uint> bsVersionOption = new("--bs-version")
+            Option<bool> legendaryOption = new("--le")
             {
-                Description = "Bethesda stream version: 83 for Skyrim LE, 100 for Skyrim SE",
-                DefaultValueFactory = _ => 83u
+                Description = "Target Skyrim Legendary Edition (stream version 83, NiTriShape geometry). "
+                    + "The default is Special Edition (stream version 100, BSTriShape geometry)",
+                DefaultValueFactory = _ => false
             };
 
             Command command = new("importfbx", "Convert FBX files to NIF")
@@ -49,7 +50,7 @@ namespace SECmd.Commands
                 outputOption,
                 invertUOption,
                 keepVOption,
-                bsVersionOption
+                legendaryOption
             };
 
             command.SetAction(parseResult => Execute(
@@ -57,13 +58,13 @@ namespace SECmd.Commands
                 parseResult.GetValue(outputOption)!,
                 parseResult.GetValue(invertUOption),
                 !parseResult.GetValue(keepVOption),
-                parseResult.GetValue(bsVersionOption)));
+                parseResult.GetValue(legendaryOption)));
 
             root.Subcommands.Add(command);
         }
 
         private static int Execute(
-            FileInfo[] inputs, DirectoryInfo outputFolder, bool invertU, bool invertV, uint bsVersion)
+            FileInfo[] inputs, DirectoryInfo outputFolder, bool invertU, bool invertV, bool legendaryEdition)
         {
             NifXmlDatabase database;
 
@@ -92,7 +93,7 @@ namespace SECmd.Commands
 
                 try
                 {
-                    ConvertOne(input, outputFolder, database, invertU, invertV, bsVersion);
+                    ConvertOne(input, outputFolder, database, invertU, invertV, legendaryEdition);
                 }
                 catch (Exception e) when (e is NifFormatException or IOException or NotSupportedException)
                 {
@@ -110,7 +111,7 @@ namespace SECmd.Commands
             NifXmlDatabase database,
             bool invertU,
             bool invertV,
-            uint bsVersion)
+            bool legendaryEdition)
         {
             var scene = new FbxScene(FbxDocument.Load(input.FullName));
 
@@ -118,7 +119,7 @@ namespace SECmd.Commands
             {
                 InvertU = invertU,
                 InvertV = invertV,
-                BSVersion = bsVersion,
+                LegendaryEdition = legendaryEdition,
 
                 // The root is named after the file, not after any node in the scene.
                 RootName = Path.GetFileNameWithoutExtension(input.Name)

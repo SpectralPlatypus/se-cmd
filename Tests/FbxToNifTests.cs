@@ -15,9 +15,12 @@ namespace SECmd.Tests
         private static NifModel FromFbx(string name, out List<string> warnings)
         {
             var scene = new FbxScene(FbxDocument.Load(PathTo(name)));
+            // These fixtures and assertions are about NiTriShape geometry, so they
+            // target LE explicitly. SE emits BSTriShape and is covered separately.
             var converter = new FbxToNif(scene, new FbxToNifOptions
             {
-                RootName = Path.GetFileNameWithoutExtension(name)
+                RootName = Path.GetFileNameWithoutExtension(name),
+                LegendaryEdition = true
             });
 
             NifModel model = converter.Convert(Db);
@@ -38,7 +41,7 @@ namespace SECmd.Tests
 
             var converter = new FbxToNif(
                 new FbxScene(document),
-                new FbxToNifOptions { RootName = Path.GetFileNameWithoutExtension(nif) });
+                new FbxToNifOptions { RootName = Path.GetFileNameWithoutExtension(nif), LegendaryEdition = true });
 
             NifModel rebuilt = converter.Convert(Db);
 
