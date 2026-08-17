@@ -36,6 +36,9 @@ namespace SECmd.Conversion
         /// </remarks>
         public bool LegendaryEdition { get; set; }
 
+        /// <summary>Rebuild the scene's animation stacks as NIF controller sequences.</summary>
+        public bool ImportAnimation { get; set; } = true;
+
         /// <summary>The Bethesda stream version implied by the target edition.</summary>
         public uint BSVersion => LegendaryEdition ? 83u : 100u;
     }
@@ -107,6 +110,11 @@ namespace SECmd.Conversion
             // Skins are wired up last: a bone is a node elsewhere in the scene, so
             // they can only be resolved once the whole tree exists.
             BuildPendingSkins(root);
+
+            // Animation last of all, for the same reason: a track names the node it
+            // moves, and the manager has to list blocks that already exist.
+            if (_options.ImportAnimation)
+                _model.WriteAnimations(root, _scene.ReadAnimations(), _nodesByName, Warnings);
 
             _model.SetRoots([root]);
             _model.UpdateHeader();
@@ -658,6 +666,11 @@ namespace SECmd.Conversion
                 : BuildBsTriShape(geometry, mesh);
 
             _model.SetTransform(shape, transform);
+
+            // A shape can be animated too, and its holder was unwrapped, so it has
+            // to be findable by name. TryAdd, because a real node of the same name
+            // is the better target of the two.
+            _nodesByName.TryAdd(NameEncoding.Unsanitize(geometry.Name), shape);
 
             BuildMaterial(shape, holder);
 
