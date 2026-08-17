@@ -30,6 +30,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Lets tests reach wire-format helpers that are not public API. -->
+    <InternalsVisibleTo Include="se-cmd.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Remove="External\MeshIO\**" />
     <EmbeddedResource Remove="External\MeshIO\**" />
     <None Remove="External\MeshIO\**" />

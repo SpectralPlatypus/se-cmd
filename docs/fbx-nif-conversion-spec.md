@@ -560,26 +560,108 @@ Recalculated or regenerated rather than round-tripped: `BSXFlags`,
 
 ---
 
-## 8. Havok SDK dependency
+## 8. Havok dependencies
 
-The FBX → NIF collision path is **not implementable from open sources alone**.
-FBXWrangler depends on:
+FBXWrangler links the Havok SDK directly. This port does not, and takes NifSkope's
+approach instead: the one piece that genuinely needs Havok is loaded from an external
+DLL at run time, and everything else is implemented directly.
 
-| Dependency | Used for | Availability |
+| FBXWrangler dependency | Used for | How this port covers it |
 | --- | --- | --- |
-| `hkpMoppUtility` | Building MOPP bounding-volume trees | Proprietary Havok SDK |
-| `hkpShapeConverter` | Tessellating primitives to geometry | Proprietary Havok SDK |
-| `hkGeometryUtility::createConvexGeometry` | Convex hulls | Proprietary Havok SDK |
-| `HKXWrapper::build_body` | Fitting a Havok body to FBX meshes | Proprietary Havok SDK |
-| VHACD | Approximate convex decomposition | Open (BSD) |
-| boundingmesh | Collision mesh simplification | Open (MIT) |
+| `hkpMoppUtility` | Building MOPP bounding-volume trees | **`NifMopp.dll`**, see below |
+| `hkpShapeConverter` | Tessellating primitives to geometry | Implemented directly; box, sphere and capsule tessellation is elementary |
+| `hkGeometryUtility::createConvexGeometry` | Convex hulls | Implemented directly (quickhull) |
+| `HKXWrapper::build_body` | Fitting a Havok body to FBX meshes | Implemented directly from the node naming conventions in §3.1 |
+| VHACD | Approximate convex decomposition | Only needed for automatic decomposition, which is not part of the conversion itself |
+| boundingmesh | Collision mesh simplification | As above |
 
-**NIF → FBX collision is unaffected**: it only tessellates shapes for display, which
-can be done directly.
+### 8.1 NifMopp.dll
 
-**FBX → NIF collision** needs MOPP generation for any mesh-based shape. There is no
-open implementation. Options are: reuse the MOPP data already present in a source NIF,
-restrict to primitive and convex shapes (which need no MOPP), or link the Havok SDK.
+MOPP code indexes a mesh collision shape, and generating it needs the Havok SDK.
+NifSkope ships a small DLL compiled against that SDK and loads it dynamically
+(`src/spells/moppcode.cpp`). This port binds the **same library with the same
+exported ABI**, so the identical binary works:
+
+```c
+int __stdcall GenerateMoppCode(int nVerts, Vector3 const* verts,
+                               int nTris, Triangle const* tris);
+int __stdcall GenerateMoppCodeWithSubshapes(int nShapes, int const* shapes,
+                                            int nVerts, Vector3 const* verts,
+                                            int nTris, Triangle const* tris);
+int __stdcall RetrieveMoppCode(int nBuffer, char* buffer);
+int __stdcall RetrieveMoppScale(float* value);
+int __stdcall RetrieveMoppOrigin(Vector3* value);
+```
+
+`GenerateMoppCode` returns the code length, then `RetrieveMoppCode` fills a buffer of
+that size and the origin and scale are read back separately.
+
+Practical constraints, inherited from it being a Havok build: Windows only, and its
+bitness must match the host process.
+
+### 8.2 mopper.exe — the portable backend
+
+[niftools/mopper](https://github.com/niftools/mopper) wraps the same Havok call in a
+standalone executable that talks pure stdin/stdout, with no GUI and no COM. It
+therefore **runs unmodified under Wine**, which is what makes MOPP generation possible
+on Linux, and running it out-of-process also removes the bitness matching that
+in-process P/Invoke demands.
+
+Invocation:
+
+| Command | Meaning |
+| --- | --- |
+| `mopper.exe -msm --` | Simple mesh shape, read from stdin |
+| `mopper.exe -ccm --` | Full compressed mesh shape, read from stdin |
+| `mopper.exe -msm <file>` | As above, from a file |
+| `mopper.exe --` / `mopper.exe <file>` | Backward compatible aliases for `-msm` |
+
+**Input** (`-msm`), whitespace-separated ASCII:
+
+```
+<vertex count>
+<x> <y> <z>              x vertex count
+<triangle count>
+<a> <b> <c>              x triangle count
+<material index count>
+```
+
+**Output**, one number per line:
+
+```
+origin.x
+origin.y
+origin.z
+scale                    written with precision 16
+<mopp code length>
+<byte as integer>        x length
+<triangle count>
+<welding info>           x triangle count
+```
+
+Three things to get right:
+
+- Floats must be written and parsed **invariantly**. A comma decimal separator makes
+  mopper stop reading mid-vertex, and it will happily emit a truncated mesh's MOPP.
+- The material index count must be **0**. mopper reads each index with `operator>>`
+  into a `hkUint8`, which consumes a *character* rather than a number, so any non-zero
+  count is misparsed.
+- On failure mopper prints Havok's error text instead of numbers, so the parse must
+  reject non-numeric output rather than trust the exit code.
+
+`-ccm` additionally returns a whole `bhkCompressedMeshShape`: bounds, big verts and
+tris, transforms, and per-chunk vertices, indices, strip lengths and welding info. Note
+that it prints the **last MOPP byte first**, then bytes `0 .. n-2`; that rotation has
+to be undone to recover the real code.
+
+### 8.3 Availability
+
+Absence of both backends is **not** an error. `IMoppGenerator` is resolved lazily,
+everything that does not need MOPP keeps working, and a `bhkMoppBvTreeShape` can still
+be written by reusing the MOPP data already present in a source NIF.
+
+**NIF → FBX collision never needs any of this**: that direction only tessellates
+shapes, and discards MOPP data outright (§4.8).
 
 ---
 
@@ -605,5 +687,5 @@ Reproduced only where behaviour depends on them; otherwise fixed and noted.
 | FBX library | MeshIO's raw node layer, with scene semantics written here. No FBX SDK, so `EvaluateGlobalTransform`, `GenerateTangentsDataForAllUVSets`, `SplitMeshesPerMaterial`, `Triangulate` and `CreateMissingBindPoses` must be implemented directly. |
 | ASCII FBX output | Not supported; MeshIO's ASCII writer emits invalid escapes. Binary only, which is what the reference emits anyway. |
 | Miniball | Replaced with an equivalent bounding-sphere routine. |
-| Havok collision (FBX → NIF) | Limited to primitives and convex shapes unless MOPP data can be reused. See §8. |
+| Havok | No SDK link. MOPP generation goes through `NifMopp.dll` as NifSkope does; shape tessellation and convex hulls are implemented directly. See §8. |
 | Reference defects | Fixed unless behaviour depends on them, and listed in §9. |
