@@ -326,14 +326,14 @@ namespace SECmd.Nif
             WriteTriangles(model, entry, "Triangles", local);
 
             // Special Edition repeats the triangles at the end of the partition,
-            // both counted by the same Num Triangles. Leaving the copy empty while
-            // the count is non-zero desynchronises every block after this one.
+            // both counted by the same Num Triangles. Filling only the first leaves
+            // the copy a run of degenerate triangles rather than the mesh.
             WriteTriangles(model, entry, "Triangles Copy", local);
 
             // Both of these are two-dimensional: one row per vertex, each holding
             // Num Weights Per Vertex slots. Sizing the outer array creates the rows
-            // but leaves them empty, because writing only ever walks children that
-            // already exist, so each row has to be sized too.
+            // but leaves them empty, and a weight cannot be written into a slot that
+            // does not exist yet, so each row has to be sized too.
             NifItem? weights = SizeGrid(model, entry, "Vertex Weights");
             NifItem? indices = SizeGrid(model, entry, "Bone Indices");
 

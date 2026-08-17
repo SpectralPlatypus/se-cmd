@@ -284,12 +284,10 @@ namespace SECmd.Nif
         /// Sizes every array in a freshly built block from its length expression.
         /// </summary>
         /// <remarks>
-        /// Reading calls <see cref="UpdateArraySize"/> as it goes, but writing only
-        /// walks the children that already exist. A block built from scratch would
-        /// therefore emit nothing for an array nobody had sized — including the
-        /// fixed-length <c>Unused</c> padding blobs, whose length is a constant and
-        /// which a reader unconditionally expects. The result is a block that is
-        /// short by a few bytes and unreadable from that point on.
+        /// Writing sizes arrays for itself (see <see cref="PrepareForOutput"/>), so
+        /// this is not what keeps a block's length honest. It is here so that code
+        /// building a block can reach into an array straight away — asking for
+        /// <c>Vertex Weights\[0]\Weight</c> without having to size anything first.
         ///
         /// Arrays whose length reads a count field simply come out empty, which is
         /// correct until the count is set.
@@ -999,11 +997,47 @@ namespace SECmd.Nif
             Save(stream);
         }
 
+        /// <summary>
+        /// Brings a field up to date with whatever its condition and length depend
+        /// on, and reports whether it is stored at all.
+        /// </summary>
+        /// <remarks>
+        /// Reading and writing have to agree on the layout byte for byte, so writing
+        /// walks the tree the same way <see cref="LoadItem"/> does: each field's
+        /// condition is invalidated immediately before it is tested, since a field
+        /// written a moment ago may be the one that condition names, and every array
+        /// is resized from its length expression before it is descended into.
+        ///
+        /// Writing used to skip both steps and emit whatever children happened to
+        /// exist. An array whose count had been set but whose elements were never
+        /// created then wrote nothing, while the reader — which believes the count —
+        /// went looking for elements that were not there. Because reading is
+        /// sequential the damage is not local: every block after the short one is
+        /// misread, and the error surfaces somewhere unrelated.
+        /// </remarks>
+        private bool PrepareForOutput(NifItem child)
+        {
+            child.InvalidateCondition();
+
+            // Abstract fields are declared for documentation and never stored.
+            if (child.IsAbstract || !EvalCondition(child))
+                return false;
+
+            if (child.IsArray && !UpdateArraySize(child))
+            {
+                string detail = Warnings.Count > 0 ? $": {Warnings[^1]}" : string.Empty;
+
+                throw new NifFormatException($"cannot size {PathOf(child)} for writing{detail}");
+            }
+
+            return true;
+        }
+
         private void SaveItem(NifItem parent, NifOStream output)
         {
             foreach (NifItem child in parent.Children)
             {
-                if (child.IsAbstract || !EvalCondition(child))
+                if (!PrepareForOutput(child))
                     continue;
 
                 if (child.IsArray || child.HasChildren)
@@ -1248,13 +1282,19 @@ namespace SECmd.Nif
         }
 
         /// <summary>The number of bytes an item and everything under it will occupy.</summary>
+        /// <remarks>
+        /// Measuring prepares each field exactly as writing does, so that the size
+        /// recorded in the header is the size that will actually be written. A
+        /// measurement taken over a tree writing is about to resize would disagree
+        /// with the bytes by however much the resize adds.
+        /// </remarks>
         private int MeasureItem(NifItem parent, NifOStream sizer)
         {
             int total = 0;
 
             foreach (NifItem child in parent.Children)
             {
-                if (child.IsAbstract || !EvalCondition(child))
+                if (!PrepareForOutput(child))
                     continue;
 
                 total += child.IsArray || child.HasChildren
