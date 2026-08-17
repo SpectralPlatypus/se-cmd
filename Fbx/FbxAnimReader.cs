@@ -1,0 +1,217 @@
+using MeshIO.Formats.Fbx;
+using SECmd.Conversion;
+
+namespace SECmd.Fbx
+{
+    /// <summary>
+    /// Reads animation back out of an FBX scene.
+    /// </summary>
+    /// <remarks>
+    /// The mirror of <see cref="FbxAnimWriter"/>, and like it mostly a matter of
+    /// following connections: a curve is only identifiable as "the X component of
+    /// this model's rotation" by the two object-to-property edges above it. Nothing
+    /// in a curve's own record says what it drives.
+    /// </remarks>
+    public static class FbxAnimReader
+    {
+        /// <summary>Every animation stack in the scene, in file order.</summary>
+        public static List<AnimSequence> ReadAnimations(this FbxScene scene)
+        {
+            var sequences = new List<AnimSequence>();
+
+            foreach (FbxObject stack in scene.OfClass("AnimationStack"))
+            {
+                if (ReadStack(scene, stack) is { } sequence)
+                    sequences.Add(sequence);
+            }
+
+            return sequences;
+        }
+
+        private static AnimSequence? ReadStack(FbxScene scene, FbxObject stack)
+        {
+            var sequence = new AnimSequence
+            {
+                Name = stack.Name,
+                Start = TimeProperty(stack, "LocalStart"),
+                Stop = TimeProperty(stack, "LocalStop")
+            };
+
+            // One track per model, however many channels turn out to drive it.
+            var tracks = new Dictionary<string, AnimTrack>(StringComparer.Ordinal);
+
+            foreach (FbxObject layer in scene.ChildrenOf(stack.Id).Where(o => o.Class == "AnimationLayer"))
+            {
+                foreach (FbxObject node in scene.ChildrenOf(layer.Id).Where(o => o.Class == "AnimationCurveNode"))
+                    ReadCurveNode(scene, node, tracks);
+            }
+
+            sequence.Tracks.AddRange(tracks.Values.Where(t => t.HasKeys));
+
+            if (sequence.Tracks.Count == 0)
+                return null;
+
+            if (!(sequence.Stop > sequence.Start))
+                (sequence.Start, sequence.Stop) = sequence.KeySpan();
+
+            return sequence;
+        }
+
+        /// <summary>Reads one channel and files its curves under the model it drives.</summary>
+        private static void ReadCurveNode(
+            FbxScene scene, FbxObject node, Dictionary<string, AnimTrack> tracks)
+        {
+            foreach (FbxConnection binding in scene.Connections)
+            {
+                if (binding.Kind != FbxConnectionKind.ObjectProperty || binding.SourceId != node.Id)
+                    continue;
+
+                if (scene[binding.DestinationId] is not { Class: "Model" } model)
+                    continue;
+
+                AnimCurve[]? channel = ChannelOf(TrackFor(tracks, model.Name), binding.PropertyName);
+
+                if (channel is null)
+                    continue;
+
+                ReadCurvesInto(scene, node, channel);
+            }
+        }
+
+        private static AnimTrack TrackFor(Dictionary<string, AnimTrack> tracks, string modelName)
+        {
+            string name = NameEncoding.Unsanitize(modelName);
+
+            // The holder interposed on export carries the transform but is not a node
+            // of its own, so a track bound to it belongs to the shape it wraps.
+            if (name.EndsWith("_support", StringComparison.Ordinal))
+                name = name[..^"_support".Length];
+
+            if (!tracks.TryGetValue(name, out AnimTrack? track))
+                tracks[name] = track = new AnimTrack { NodeName = name };
+
+            return track;
+        }
+
+        private static AnimCurve[]? ChannelOf(AnimTrack track, string property) => property switch
+        {
+            "Lcl Translation" => track.Translation,
+            "Lcl Rotation" => track.Rotation,
+            "Lcl Scaling" => track.Scale,
+            _ => null
+        };
+
+        private static void ReadCurvesInto(FbxScene scene, FbxObject node, AnimCurve[] channel)
+        {
+            foreach (FbxConnection c in scene.Connections)
+            {
+                if (c.Kind != FbxConnectionKind.ObjectProperty || c.DestinationId != node.Id)
+                    continue;
+
+                if (scene[c.SourceId] is not { Class: "AnimationCurve" } curve)
+                    continue;
+
+                int axis = c.PropertyName switch
+                {
+                    "d|X" => 0,
+                    "d|Y" => 1,
+                    "d|Z" => 2,
+                    _ => -1
+                };
+
+                if (axis >= 0)
+                    ReadCurve(curve, channel[axis]);
+            }
+        }
+
+        /// <summary>Reads one curve's parallel key arrays into a curve.</summary>
+        /// <remarks>
+        /// The interpolation arrays are run-length encoded against the keys, so they
+        /// are expanded here. A curve whose runs do not add up to its key count is
+        /// read as far as they go rather than refused: the keys are still good.
+        /// </remarks>
+        public static void ReadCurve(FbxObject curve, AnimCurve into)
+        {
+            long[] times = ReadLongs(curve.Child("KeyTime"));
+            float[] values = ReadFloats(curve.Child("KeyValueFloat"));
+
+            var interpolations = ExpandFlags(
+                ReadInts(curve.Child("KeyAttrFlags")),
+                ReadInts(curve.Child("KeyAttrRefCount")),
+                times.Length);
+
+            int count = Math.Min(times.Length, values.Length);
+
+            for (int i = 0; i < count; i++)
+            {
+                into.Keys.Add(new AnimKey(
+                    FbxAnimWriter.FromFbxTime(times[i]),
+                    values[i],
+                    i < interpolations.Count ? interpolations[i] : AnimInterpolation.Linear));
+            }
+        }
+
+        private static List<AnimInterpolation> ExpandFlags(int[] flags, int[] refCounts, int keyCount)
+        {
+            var result = new List<AnimInterpolation>(keyCount);
+
+            for (int i = 0; i < flags.Length && result.Count < keyCount; i++)
+            {
+                // A run count of zero would loop forever; one key is the least a run
+                // can honestly describe.
+                int run = i < refCounts.Length ? Math.Max(refCounts[i], 1) : keyCount - result.Count;
+
+                for (int k = 0; k < run && result.Count < keyCount; k++)
+                    result.Add(FromFlags(flags[i]));
+            }
+
+            return result;
+        }
+
+        private static AnimInterpolation FromFlags(int flags)
+        {
+            const int Constant = 0x00000002;
+            const int Linear = 0x00000004;
+
+            if ((flags & Constant) != 0)
+                return AnimInterpolation.Constant;
+
+            return (flags & Linear) != 0 ? AnimInterpolation.Linear : AnimInterpolation.Cubic;
+        }
+
+        private static float TimeProperty(FbxObject o, string name)
+        {
+            IReadOnlyList<object?> values = o.Properties.ValuesOf(name);
+
+            return values.Count > 0 && values[0] is not null
+                ? FbxAnimWriter.FromFbxTime(System.Convert.ToInt64(values[0]))
+                : 0f;
+        }
+
+        // --- array readers ----------------------------------------------------
+        //
+        // FBX picks the narrowest representation that fits, so the same field can
+        // arrive as any of several array types depending on who wrote the file.
+
+        private static long[] ReadLongs(FbxNode? node) => node?.Properties.FirstOrDefault() switch
+        {
+            long[] l => l,
+            int[] i => Array.ConvertAll(i, v => (long)v),
+            _ => []
+        };
+
+        private static float[] ReadFloats(FbxNode? node) => node?.Properties.FirstOrDefault() switch
+        {
+            float[] f => f,
+            double[] d => Array.ConvertAll(d, v => (float)v),
+            _ => []
+        };
+
+        private static int[] ReadInts(FbxNode? node) => node?.Properties.FirstOrDefault() switch
+        {
+            int[] i => i,
+            long[] l => Array.ConvertAll(l, v => (int)v),
+            _ => []
+        };
+    }
+}
