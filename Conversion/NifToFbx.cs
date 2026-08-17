@@ -160,8 +160,79 @@ namespace SECmd.Conversion
             FbxObject geometry = FbxMeshWriter.AddGeometry(scene, name, mesh);
             scene.Connect(geometry, holder);
 
+            if (ReadMaterial(shape, name) is { } material)
+            {
+                FbxObject fbxMaterial = FbxMaterialWriter.AddMaterial(scene, material, _options.TexturePath);
+
+                // A material belongs to the node carrying the mesh, not the mesh,
+                // and the geometry's material element points at index 0.
+                scene.Connect(fbxMaterial, holder);
+                FbxMeshWriter.AddSingleMaterialElement(geometry);
+            }
+
             _built[shape] = holder;
         }
+
+        /// <summary>
+        /// Reads a shape's shader and alpha properties into the neutral material
+        /// form, or null when it has no shader property.
+        /// </summary>
+        private MaterialData? ReadMaterial(NifItem shape, string name)
+        {
+            NifItem? shader = _model.GetRef(shape, "Shader Property");
+
+            if (shader is null || !_model.BlockInherits(shader, "BSLightingShaderProperty"))
+                return null;
+
+            var material = new MaterialData
+            {
+                Name = name,
+                EmissiveColor = Color3Of(shader, "Emissive Color"),
+                EmissiveMultiple = FloatOf(shader, "Emissive Multiple", 1f),
+                SpecularColor = Color3Of(shader, "Specular Color"),
+                SpecularStrength = FloatOf(shader, "Specular Strength"),
+                Glossiness = FloatOf(shader, "Glossiness"),
+                Alpha = FloatOf(shader, "Alpha", 1f),
+                EnvironmentMapScale = FloatOf(shader, "Environment Map Scale"),
+                UvOffset = Vector2Of(shader, "UV Offset", new NifVector2(0f, 0f)),
+                UvScale = Vector2Of(shader, "UV Scale", new NifVector2(1f, 1f)),
+                TextureClampMode = _model.GetUInt(shader, "Texture Clamp Mode")
+            };
+
+            // The shader path is stored on the NiObjectNET level, guarded by an
+            // onlyT condition, and is written out by name rather than as a number.
+            if (_model.FindItem(shader, "Shader Type") is { } shaderType
+                && _model.Database.TryGetEnumOptionName(
+                    shaderType.Type, shaderType.Value.ToUInt(), out string typeName))
+            {
+                material.ShaderType = typeName;
+            }
+
+            if (_model.GetRef(shader, "Texture Set") is { } textureSet
+                && _model.FindItem(textureSet, "Textures") is { } textures)
+            {
+                foreach (NifItem texture in textures.Children)
+                    material.Textures.Add(texture.Value.AsString());
+            }
+
+            if (_model.GetRef(shape, "Alpha Property") is { } alphaProperty)
+            {
+                material.AlphaProperty = AlphaSettings.FromFlags(
+                    (ushort)_model.GetUInt(alphaProperty, "Flags"),
+                    (byte)_model.GetUInt(alphaProperty, "Threshold"));
+            }
+
+            return material;
+        }
+
+        private float FloatOf(NifItem block, string field, float fallback = 0f) =>
+            _model.FindItem(block, field) is { } item ? item.Value.ToFloat() : fallback;
+
+        private NifColor3 Color3Of(NifItem block, string field) =>
+            _model.FindItem(block, field)?.Value.Get<NifColor3>() ?? new NifColor3();
+
+        private NifVector2 Vector2Of(NifItem block, string field, NifVector2 fallback) =>
+            _model.FindItem(block, field) is { } item ? item.Value.Get<NifVector2>() : fallback;
 
         /// <summary>
         /// Reads a geometry data block into the neutral mesh form, baking the
