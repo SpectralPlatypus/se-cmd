@@ -1351,6 +1351,13 @@ namespace SECmd.Nif
         /// The text of a string field, following the header string table when the
         /// field is stored as an index.
         /// </summary>
+        /// <remarks>
+        /// The table consulted is the model's own, not the copy in the header. Both
+        /// hold the same strings for a file that was loaded, but the header's is only
+        /// written out by <see cref="UpdateHeader"/> — so on a model built from
+        /// scratch it is empty, and reading back a name that was just set would
+        /// return nothing at all.
+        /// </remarks>
         public string ResolveString(NifItem item)
         {
             if (item.Value.Type != NifValueType.StringIndex)
@@ -1358,11 +1365,7 @@ namespace SECmd.Nif
 
             int index = (int)item.Value.ToUInt();
 
-            if (index < 0)
-                return string.Empty;
-
-            NifItem? strings = FindItem(_header, "Strings");
-            return strings?.Child(index)?.Value.AsString() ?? string.Empty;
+            return index >= 0 && index < _strings.Count ? _strings[index] : string.Empty;
         }
 
         /// <summary>The block a link points at, or null for a null link.</summary>
