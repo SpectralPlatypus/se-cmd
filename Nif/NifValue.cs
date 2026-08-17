@@ -316,24 +316,23 @@ namespace SECmd.Nif
         };
 
         /// <summary>
-        /// Resolves a nif.xml type name to a storage type, or
-        /// <see cref="NifValueType.None"/> when the name is a compound declared in
-        /// the XML rather than something the stream reads directly.
+        /// Resolves one of the built-in nif.xml type names to a storage type, or
+        /// <see cref="NifValueType.None"/> when the name is not built in.
         /// </summary>
+        /// <remarks>
+        /// This only covers the names hard-coded above. Enums, bitflags and
+        /// bitfields declared in the XML alias further names onto these types;
+        /// those live in <see cref="NifXmlDatabase"/> rather than here, so that
+        /// parsing a second XML cannot leak aliases into the first.
+        /// </remarks>
         public static NifValueType TypeFromName(string name) =>
             TypeMap.TryGetValue(name, out var type) ? type : NifValueType.None;
 
-        /// <summary>Registers an additional name for an existing storage type.</summary>
-        public static bool RegisterAlias(string alias, string original)
-        {
-            if (!TypeMap.TryGetValue(original, out var type))
-                return false;
-
-            TypeMap[alias] = type;
-            return true;
-        }
-
-        /// <summary>True when the name maps to a type the stream reads directly.</summary>
-        public static bool IsInternalType(string name) => TypeMap.ContainsKey(name);
+        /// <summary>
+        /// A fresh, mutable copy of the built-in name-to-type map, for a database to
+        /// extend with the aliases it finds in the XML.
+        /// </summary>
+        internal static Dictionary<string, NifValueType> CreateTypeMap() =>
+            new(TypeMap, StringComparer.Ordinal);
     }
 }
