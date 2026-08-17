@@ -273,8 +273,142 @@ namespace SECmd.Conversion
 
             "bhkConvexVerticesShape" => ShapeTessellator.ConvexHull(ReadConvexVertices(shape)),
 
+            "bhkCompressedMeshShape" => ReadCompressedMesh(shape),
+
             _ => null
         };
+
+        /// <summary>
+        /// Decodes a <c>bhkCompressedMeshShape</c> back into triangles (spec §4.8.1).
+        /// </summary>
+        /// <remarks>
+        /// The mesh is stored in two parts. "Big" vertices and triangles sit in the
+        /// data block directly, at full precision. Everything else is chunked:
+        /// vertices are 16-bit offsets from a per-chunk origin, scaled by 1/1000 and
+        /// placed by a shared transform, and the triangles are held partly as strips
+        /// and partly as a plain index list.
+        /// </remarks>
+        private MeshGeometry? ReadCompressedMesh(NifItem shape)
+        {
+            NifItem? data = _model.GetRef(shape, "Data");
+
+            if (data is null)
+                return null;
+
+            var mesh = new MeshGeometry();
+
+            // Big geometry is stored ready to use.
+            if (_model.FindItem(data, "Big Verts") is { } bigVerts)
+            {
+                foreach (NifItem item in bigVerts.Children)
+                {
+                    NifVector4 v = item.Value.Get<NifVector4>();
+                    mesh.Vertices.Add(new NifVector3(v.X, v.Y, v.Z));
+                }
+            }
+
+            if (_model.FindItem(data, "Big Tris") is { } bigTris)
+            {
+                foreach (NifItem item in bigTris.Children)
+                {
+                    NifTriangle t = _model.FindItem(item, "Triangle")?.Value.Get<NifTriangle>() ?? default;
+
+                    if (t.V1 < mesh.Vertices.Count && t.V2 < mesh.Vertices.Count && t.V3 < mesh.Vertices.Count)
+                        mesh.Triangles.Add(t);
+                }
+            }
+
+            var transforms = new List<NifTransform>();
+
+            if (_model.FindItem(data, "Chunk Transforms") is { } chunkTransforms)
+            {
+                foreach (NifItem item in chunkTransforms.Children)
+                {
+                    NifVector4 t = _model.FindItem(item, "Translation")?.Value.Get<NifVector4>() ?? default;
+                    NifQuat r = _model.FindItem(item, "Rotation")?.Value.Get<NifQuat>() ?? NifQuat.Identity;
+
+                    transforms.Add(new NifTransform(
+                        new NifVector3(t.X, t.Y, t.Z), RotationFromQuaternion(r), 1f));
+                }
+            }
+
+            if (_model.FindItem(data, "Chunks") is not { } chunks)
+                return mesh;
+
+            foreach (NifItem chunk in chunks.Children)
+            {
+                NifVector4 origin = _model.FindItem(chunk, "Translation")?.Value.Get<NifVector4>() ?? default;
+                int transformIndex = (int)_model.GetUInt(chunk, "Transform Index");
+
+                NifTransform placement = transformIndex >= 0 && transformIndex < transforms.Count
+                    ? transforms[transformIndex]
+                    : NifTransform.Identity;
+
+                var offsets = ReadUShorts(chunk, "Vertices");
+                var indices = ReadUShorts(chunk, "Indices");
+                var strips = ReadUShorts(chunk, "Strips");
+
+                int firstVertex = mesh.Vertices.Count;
+
+                // Vertices are millimetre offsets from the chunk's own origin.
+                for (int i = 0; i + 2 < offsets.Count; i += 3)
+                {
+                    var local = new NifVector3(
+                        origin.X + offsets[i] / 1000f,
+                        origin.Y + offsets[i + 1] / 1000f,
+                        origin.Z + offsets[i + 2] / 1000f);
+
+                    mesh.Vertices.Add(placement.Apply(local));
+                }
+
+                int at = 0;
+
+                // Strips first, alternating winding as a triangle strip does.
+                foreach (ushort length in strips)
+                {
+                    for (int f = 0; f + 2 < length; f++)
+                    {
+                        if (at + f + 2 >= indices.Count)
+                            break;
+
+                        int a = firstVertex + indices[at + f];
+                        int b = firstVertex + indices[at + f + 1];
+                        int c = firstVertex + indices[at + f + 2];
+
+                        mesh.Triangles.Add((f & 1) == 1
+                            ? new NifTriangle((ushort)c, (ushort)b, (ushort)a)
+                            : new NifTriangle((ushort)a, (ushort)b, (ushort)c));
+                    }
+
+                    at += length;
+                }
+
+                // Whatever follows the strips is a plain triangle list.
+                for (int f = at; f + 2 < indices.Count; f += 3)
+                {
+                    mesh.Triangles.Add(new NifTriangle(
+                        (ushort)(firstVertex + indices[f]),
+                        (ushort)(firstVertex + indices[f + 1]),
+                        (ushort)(firstVertex + indices[f + 2])));
+                }
+            }
+
+            mesh.RecalculateNormals();
+            return mesh;
+        }
+
+        private List<ushort> ReadUShorts(NifItem parent, string field)
+        {
+            var values = new List<ushort>();
+
+            if (_model.FindItem(parent, field) is not { } array)
+                return values;
+
+            foreach (NifItem item in array.Children)
+                values.Add((ushort)item.Value.ToUInt());
+
+            return values;
+        }
 
         /// <summary>
         /// A convex shape's vertices, which are stored as Vector4 with the fourth

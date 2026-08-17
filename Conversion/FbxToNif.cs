@@ -1,3 +1,4 @@
+using SECmd.Havok;
 using SECmd.Fbx;
 using SECmd.Nif;
 
@@ -32,8 +33,8 @@ namespace SECmd.Conversion
     /// scene, meshes become <c>NiTriShape</c> plus <c>NiTriShapeData</c>, and node
     /// names are decoded back through <see cref="NameEncoding"/>.
     ///
-    /// Collision nodes (the <c>_rb</c> and <c>_sp</c> suffixes) are recognised and
-    /// reported but not yet built; that is spec §5.7.
+    /// Collision nodes (the <c>_rb</c> and <c>_sp</c> suffixes) become collision
+    /// objects attached to their parent rather than children of it (spec §5.7).
     /// </remarks>
     public sealed class FbxToNif(FbxScene scene, FbxToNifOptions? options = null)
     {
@@ -334,10 +335,7 @@ namespace SECmd.Conversion
                     return BuildConvex(points);
 
                 if (name.EndsWith("_mesh", StringComparison.Ordinal))
-                {
-                    Warnings.Add($"{name}: mesh collision shapes are not built yet");
-                    return null;
-                }
+                    return BuildCompressedMesh(child, name);
             }
 
             return null;
@@ -409,6 +407,174 @@ namespace SECmd.Conversion
             SetFloat(shape, "Radius 2", radius);
 
             return shape;
+        }
+
+        /// <summary>
+        /// Builds a <c>bhkCompressedMeshShape</c>, which needs Havok to chunk and
+        /// quantise the mesh and to build the MOPP tree that indexes it.
+        /// </summary>
+        /// <remarks>
+        /// This is the one shape that cannot be produced from open code: the chunk
+        /// layout, the transforms and the MOPP tree all come out of the same Havok
+        /// pass, so they have to be generated together by mopper. Without it, the
+        /// shape is reported rather than approximated — a mesh collision fitted to a
+        /// primitive would be silently wrong in a way that only shows up in game.
+        /// </remarks>
+        private NifItem? BuildCompressedMesh(FbxObject node, string name)
+        {
+            IMoppGenerator? generator = MoppGenerator.Resolve();
+
+            if (generator is null)
+            {
+                Warnings.Add($"{name}: mesh collision needs MOPP generation. {MoppGenerator.DescribeUnavailability()}");
+                return null;
+            }
+
+            FbxObject? geometry = _scene.ChildrenOf(node.Id).FirstOrDefault(o => o.Class == "Geometry");
+            MeshGeometry? mesh = geometry is null
+                ? null
+                : FbxMeshReader.Read(geometry, new FbxMeshReader.Options { InvertU = false, InvertV = false });
+
+            if (mesh is null || mesh.Triangles.Count == 0)
+            {
+                Warnings.Add($"{name}: mesh collision node has no geometry");
+                return null;
+            }
+
+            // Havok works in metres.
+            var vertices = new List<NifVector3>(mesh.Vertices.Count);
+
+            foreach (NifVector3 v in mesh.Vertices)
+            {
+                vertices.Add(new NifVector3(
+                    v.X * ShapeTessellator.BhkScaleFactorInverse,
+                    v.Y * ShapeTessellator.BhkScaleFactorInverse,
+                    v.Z * ShapeTessellator.BhkScaleFactorInverse));
+            }
+
+            CompressedMeshResult? built = generator.GenerateCompressedMesh(
+                [new MoppGeometry(vertices, mesh.Triangles)]);
+
+            if (built is null)
+            {
+                Warnings.Add($"{name}: MOPP generation failed for the mesh collision shape");
+                return null;
+            }
+
+            NifItem shape = _model.InsertBlock("bhkCompressedMeshShape");
+            NifItem data = _model.InsertBlock("bhkCompressedMeshShapeData");
+
+            SetFloat(shape, "Radius", 0.005f);
+            SetFloat(shape, "Radius Copy", 0.005f);
+            _model.FindItem(shape, "Scale")?.Value.Set(new NifVector4(1f, 1f, 1f, 0f));
+            _model.FindItem(shape, "Scale Copy")?.Value.Set(new NifVector4(1f, 1f, 1f, 0f));
+            _model.SetRef(shape, "Data", data);
+
+            WriteCompressedMeshData(data, built);
+
+            // Havok reaches the shape through a MOPP tree, never directly.
+            NifItem mopp = _model.InsertBlock("bhkMoppBvTreeShape");
+            _model.SetRef(mopp, "Shape", shape);
+            WriteMoppCode(mopp, built.Mopp);
+
+            return mopp;
+        }
+
+        /// <summary>Writes the MOPP tree and the quantisation it was built against.</summary>
+        /// <remarks>
+        /// The scale sits on the shape, the offset and the code inside the
+        /// <c>MOPP Code</c> block. The code itself is a <em>binary</em> array, so it
+        /// is one blob sized by <c>Data Size</c> rather than a byte per element.
+        /// </remarks>
+        private void WriteMoppCode(NifItem mopp, MoppResult result)
+        {
+            SetFloat(mopp, "Scale", result.Scale);
+
+            _model.FindItem(mopp, @"MOPP Code\Offset")?.Value.Set(
+                new NifVector4(result.Origin.X, result.Origin.Y, result.Origin.Z, 0f));
+
+            // mopper builds with chunk subdivision enabled.
+            SetEnum(mopp, @"MOPP Code\Build Type", "hkMoppCodeBuildType", "BUILT_WITH_CHUNK_SUBDIVISION");
+
+            if (_model.SetArraySize(mopp, @"MOPP Code\Data Size", @"MOPP Code\Data", result.Code.Length)
+                is { Children.Count: > 0 } blob)
+            {
+                blob.Children[0].Value.Set(result.Code);
+            }
+        }
+
+        /// <summary>Writes the chunked mesh Havok produced.</summary>
+        private void WriteCompressedMeshData(NifItem data, CompressedMeshResult built)
+        {
+            _model.FindItem(data, @"AABB\Min")?.Value.Set(built.BoundsMin);
+            _model.FindItem(data, @"AABB\Max")?.Value.Set(built.BoundsMax);
+
+            // The index widths Havok packs chunk vertices with.
+            SetCount(data, "Bits Per Index", 17);
+            SetCount(data, "Bits Per W Index", 18);
+            SetCount(data, "Mask W Index", 262143);
+            SetCount(data, "Mask Index", 131071);
+            SetFloat(data, "Error", 0.001f);
+
+            if (_model.SetArraySize(data, "Num Big Verts", "Big Verts", built.BigVertices.Count) is { } bigVerts)
+            {
+                for (int i = 0; i < built.BigVertices.Count && i < bigVerts.Children.Count; i++)
+                    bigVerts.Children[i].Value.Set(built.BigVertices[i]);
+            }
+
+            if (_model.SetArraySize(data, "Num Big Tris", "Big Tris", built.BigTriangles.Count) is { } bigTris)
+            {
+                for (int i = 0; i < built.BigTriangles.Count && i < bigTris.Children.Count; i++)
+                {
+                    var (a, b, c, material, welding) = built.BigTriangles[i];
+                    NifItem entry = bigTris.Children[i];
+
+                    _model.FindItem(entry, "Triangle")?.Value.Set(new NifTriangle((ushort)a, (ushort)b, (ushort)c));
+                    _model.FindItem(entry, "Material")?.Value.SetCount(material);
+                    _model.FindItem(entry, "Welding Info")?.Value.SetCount(welding);
+                }
+            }
+
+            if (_model.SetArraySize(data, "Num Transforms", "Chunk Transforms", built.Transforms.Count)
+                is { } transforms)
+            {
+                for (int i = 0; i < built.Transforms.Count && i < transforms.Children.Count; i++)
+                {
+                    NifItem entry = transforms.Children[i];
+                    _model.FindItem(entry, "Translation")?.Value.Set(built.Transforms[i].Translation);
+                    _model.FindItem(entry, "Rotation")?.Value.Set(built.Transforms[i].Rotation);
+                }
+            }
+
+            if (_model.SetArraySize(data, "Num Chunks", "Chunks", built.Chunks.Count) is not { } chunks)
+                return;
+
+            for (int i = 0; i < built.Chunks.Count && i < chunks.Children.Count; i++)
+            {
+                CompressedMeshChunk source = built.Chunks[i];
+                NifItem chunk = chunks.Children[i];
+
+                _model.FindItem(chunk, "Translation")?.Value.Set(source.Offset);
+                _model.FindItem(chunk, "Material Index")?.Value.SetCount(source.MaterialInfo);
+                _model.FindItem(chunk, "Transform Index")?.Value.SetCount(source.TransformIndex);
+
+                // mopper prints a hard-coded 65535 here, which is what Havok expects.
+                _model.FindItem(chunk, "Reference")?.Value.SetCount(65535);
+
+                WriteUShorts(chunk, "Num Vertices", "Vertices", source.Vertices);
+                WriteUShorts(chunk, "Num Indices", "Indices", source.Indices);
+                WriteUShorts(chunk, "Num Strips", "Strips", source.StripLengths);
+                WriteUShorts(chunk, "Num Welding Info", "Welding Info", source.WeldingInfo);
+            }
+        }
+
+        private void WriteUShorts(NifItem parent, string countField, string arrayField, IReadOnlyList<ushort> values)
+        {
+            if (_model.SetArraySize(parent, countField, arrayField, values.Count) is not { } array)
+                return;
+
+            for (int i = 0; i < values.Count && i < array.Children.Count; i++)
+                array.Children[i].Value.SetCount(values[i]);
         }
 
         private NifItem BuildConvex(IReadOnlyList<NifVector3> points)
