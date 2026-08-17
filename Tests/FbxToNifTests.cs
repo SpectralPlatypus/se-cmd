@@ -123,12 +123,14 @@ namespace SECmd.Tests
         }
 
         [Fact]
-        public void ReportsCollisionBodiesRatherThanSilentlyDroppingThem()
+        public void BuildsCollisionFromRigidBodyNodes()
         {
-            // The _rb suffix marks a rigid body, which is not converted yet.
-            FromFbx("generate_rb_box_with_mesh.fbx", out List<string> warnings);
+            // The _rb suffix marks a rigid body, which is rebuilt rather than
+            // becoming an ordinary node.
+            NifModel model = FromFbx("generate_rb_box_with_mesh.fbx", out _);
 
-            Assert.Contains(warnings, w => w.Contains("collision", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(model.Blocks, b => b.Name == "bhkCollisionObject");
+            Assert.DoesNotContain(model.Blocks, b => model.GetName(b).EndsWith("_rb", StringComparison.Ordinal));
         }
 
         // --- full round trip --------------------------------------------------

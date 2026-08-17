@@ -268,7 +268,44 @@ namespace SECmd.Nif
             Renumber(_root);
             _blocks.Add(item);
 
+            InitialiseArrays(item);
+
+            // Sizing had to evaluate conditions, and did so against fields that are
+            // all still at their defaults. Those answers must not be cached, or a
+            // field set afterwards -- "Has Vertex Colors", say -- would be written
+            // while the array it guards stayed invisible, producing a block that is
+            // short by exactly that array.
+            item.InvalidateConditionsRecursive();
+
             return item;
+        }
+
+        /// <summary>
+        /// Sizes every array in a freshly built block from its length expression.
+        /// </summary>
+        /// <remarks>
+        /// Reading calls <see cref="UpdateArraySize"/> as it goes, but writing only
+        /// walks the children that already exist. A block built from scratch would
+        /// therefore emit nothing for an array nobody had sized — including the
+        /// fixed-length <c>Unused</c> padding blobs, whose length is a constant and
+        /// which a reader unconditionally expects. The result is a block that is
+        /// short by a few bytes and unreadable from that point on.
+        ///
+        /// Arrays whose length reads a count field simply come out empty, which is
+        /// correct until the count is set.
+        /// </remarks>
+        private void InitialiseArrays(NifItem item)
+        {
+            foreach (NifItem child in item.Children)
+            {
+                if (child.IsAbstract || !EvalCondition(child))
+                    continue;
+
+                if (child.IsArray)
+                    UpdateArraySize(child);
+
+                InitialiseArrays(child);
+            }
         }
 
         private static void Renumber(NifItem parent)

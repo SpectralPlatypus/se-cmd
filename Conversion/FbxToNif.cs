@@ -82,6 +82,10 @@ namespace SECmd.Conversion
 
             AttachChildren(root, children);
 
+            // Collision sitting directly under the scene root belongs to the root
+            // block, and would otherwise be left unattached.
+            BuildCollisionFrom(root, 0);
+
             _model.SetRoots([root]);
             _model.UpdateHeader();
 
@@ -96,11 +100,10 @@ namespace SECmd.Conversion
             string name = NameEncoding.Unsanitize(model.Name);
 
             // Collision bodies are leaves keyed off their name suffix, not ordinary
-            // nodes. Recognising them matters even while they are unimplemented, so
-            // they are not silently turned into empty NiNodes.
+            // nodes, and are attached to their parent rather than listed as a child.
             if (name.EndsWith("_rb", StringComparison.Ordinal) || name.EndsWith("_sp", StringComparison.Ordinal))
             {
-                Warnings.Add($"{name}: collision bodies are not converted yet, skipping");
+                _pendingCollision.Add(model);
                 return;
             }
 
@@ -133,6 +136,10 @@ namespace SECmd.Conversion
             _model.SetString(node, "Name", name);
             _model.SetTransform(node, transform);
 
+            // Collision found under this node attaches to it rather than becoming a
+            // child, so collect it before recursing into the real children.
+            int collisionMark = _pendingCollision.Count;
+
             var nodeChildren = new List<NifItem>();
 
             foreach (FbxObject geometry in geometries)
@@ -145,7 +152,287 @@ namespace SECmd.Conversion
                 ConvertModel(child, nodeChildren);
 
             AttachChildren(node, nodeChildren);
+            BuildCollisionFrom(node, collisionMark);
             into.Add(node);
+        }
+
+        /// <summary>Collision bodies seen since <paramref name="mark"/>, awaiting a node to attach to.</summary>
+        private readonly List<FbxObject> _pendingCollision = [];
+
+        /// <summary>
+        /// Builds the collision object for a node from any bodies found beneath it.
+        /// </summary>
+        /// <remarks>
+        /// A NIF node holds exactly one collision object, so when several bodies sit
+        /// under one node only the first becomes it and the rest are reported. That
+        /// is rare enough in practice to be worth saying rather than silently
+        /// merging or dropping.
+        /// </remarks>
+        private void BuildCollisionFrom(NifItem node, int mark)
+        {
+            if (_pendingCollision.Count <= mark)
+                return;
+
+            var bodies = _pendingCollision.GetRange(mark, _pendingCollision.Count - mark);
+            _pendingCollision.RemoveRange(mark, _pendingCollision.Count - mark);
+
+            for (int i = 1; i < bodies.Count; i++)
+                Warnings.Add($"{NameEncoding.Unsanitize(bodies[i].Name)}: only one collision body per node, ignored");
+
+            if (BuildRigidBody(bodies[0]) is { } collision)
+            {
+                _model.SetRef(node, "Collision Object", collision);
+                _model.SetRef(collision, "Target", node);
+            }
+        }
+
+        /// <summary>
+        /// Builds a collision object and its body from an <c>_rb</c> or <c>_sp</c> node.
+        /// </summary>
+        private NifItem? BuildRigidBody(FbxObject bodyNode)
+        {
+            string name = NameEncoding.Unsanitize(bodyNode.Name);
+            bool isPhantom = name.EndsWith("_sp", StringComparison.Ordinal);
+
+            NifItem? shape = BuildShapeFrom(bodyNode, name);
+
+            if (shape is null)
+            {
+                Warnings.Add($"{name}: no collision shape found beneath it");
+                return null;
+            }
+
+            if (isPhantom)
+            {
+                NifItem phantomCollision = _model.InsertBlock("bhkSPCollisionObject");
+                NifItem phantom = _model.InsertBlock("bhkSimpleShapePhantom");
+
+                _model.SetRef(phantom, "Shape", shape);
+                _model.SetRef(phantomCollision, "Body", phantom);
+
+                return phantomCollision;
+            }
+
+            NifItem collision = _model.InsertBlock("bhkCollisionObject");
+
+            // bhkRigidBodyT applies its own transform; the plain body ignores it.
+            NifItem body = _model.InsertBlock("bhkRigidBodyT");
+
+            _model.SetRef(body, "Shape", shape);
+            WriteBodyTransform(body, bodyNode);
+            WriteStaticMotion(body);
+
+            _model.SetRef(collision, "Body", body);
+
+            return collision;
+        }
+
+        /// <summary>
+        /// Writes a body's placement, converting Skyrim units back to Havok metres.
+        /// </summary>
+        private void WriteBodyTransform(NifItem body, FbxObject bodyNode)
+        {
+            NifTransform transform = ReadTransform(bodyNode);
+            NifVector3 t = transform.Translation;
+
+            _model.FindItem(body, @"Rigid Body Info\Translation")?.Value.Set(new NifVector4(
+                t.X * ShapeTessellator.BhkScaleFactorInverse,
+                t.Y * ShapeTessellator.BhkScaleFactorInverse,
+                t.Z * ShapeTessellator.BhkScaleFactorInverse,
+                0f));
+
+            _model.FindItem(body, @"Rigid Body Info\Rotation")?.Value.Set(transform.ToQuaternion());
+        }
+
+        /// <summary>
+        /// Applies the motion settings a static body needs (spec §5.7).
+        /// </summary>
+        /// <remarks>
+        /// Statics also get zero mass and a zero inertia tensor. Leaving a mass on a
+        /// static body makes Havok treat it as movable, which is how a piece of
+        /// scenery ends up falling through the world.
+        /// </remarks>
+        private void WriteStaticMotion(NifItem body)
+        {
+            SetEnum(body, @"Rigid Body Info\Motion System", "Motion System", "MO_SYS_BOX_STABILIZED");
+            SetEnum(body, @"Rigid Body Info\Solver Deactivation", "Solver Deactivation", "SOLVER_DEACTIVATION_OFF");
+            SetEnum(body, @"Rigid Body Info\Quality Type", "Motion Quality", "MO_QUAL_INVALID");
+
+            SetFloat(body, @"Rigid Body Info\Mass", 0f);
+
+            // Havok wants the tensor cleared, not merely small.
+            for (int row = 1; row <= 3; row++)
+            {
+                for (int column = 1; column <= 4; column++)
+                    SetFloat(body, $@"Rigid Body Info\Inertia Tensor\m{row}{column}", 0f);
+            }
+        }
+
+        /// <summary>
+        /// Sets an enum field by option name, so the intent survives even though the
+        /// numeric values differ between enums.
+        /// </summary>
+        private void SetEnum(NifItem block, string path, string enumType, string optionName)
+        {
+            NifItem? item = _model.FindItem(block, path);
+
+            if (item is null)
+                return;
+
+            if (_model.Database.TryGetEnumOptionValue(item.Type, optionName, out uint value)
+                || _model.Database.TryGetEnumOptionValue(enumType, optionName, out value))
+            {
+                item.Value.SetCount(value);
+            }
+        }
+
+        /// <summary>
+        /// Finds the shape beneath a body node and fits a Havok primitive to it,
+        /// choosing which by the node's name suffix.
+        /// </summary>
+        private NifItem? BuildShapeFrom(FbxObject parent, string parentName, int depth = 0)
+        {
+            if (depth > 16)
+            {
+                Warnings.Add($"{parentName}: collision nodes nest too deeply, stopping");
+                return null;
+            }
+
+            foreach (FbxObject child in _scene.ChildrenOf(parent.Id).Where(o => o.Class == "Model"))
+            {
+                string name = NameEncoding.Unsanitize(child.Name);
+
+                // Containers pass straight through: the tree they describe is
+                // rebuilt by Havok, so only the leaf shape matters here.
+                if (name.EndsWith("_transform", StringComparison.Ordinal)
+                    || name.EndsWith("_list", StringComparison.Ordinal)
+                    || name.EndsWith("_convex_list", StringComparison.Ordinal)
+                    || name.EndsWith("_mopp", StringComparison.Ordinal))
+                {
+                    if (BuildShapeFrom(child, name, depth + 1) is { } nested)
+                        return nested;
+
+                    continue;
+                }
+
+                if (ReadShapePoints(child) is not { Count: > 0 } points)
+                    continue;
+
+                // The suffix decides the primitive. Guessing from the geometry would
+                // silently swap a sphere for a box: their tessellations are not
+                // reliably distinguishable.
+                if (name.EndsWith("_box", StringComparison.Ordinal))
+                    return BuildBox(points);
+
+                if (name.EndsWith("_sphere", StringComparison.Ordinal))
+                    return BuildSphere(points);
+
+                if (name.EndsWith("_capsule", StringComparison.Ordinal))
+                    return BuildCapsule(points);
+
+                if (name.EndsWith("_convex", StringComparison.Ordinal))
+                    return BuildConvex(points);
+
+                if (name.EndsWith("_mesh", StringComparison.Ordinal))
+                {
+                    Warnings.Add($"{name}: mesh collision shapes are not built yet");
+                    return null;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// The vertices of a collision node's mesh, converted back to Havok metres.
+        /// </summary>
+        private List<NifVector3>? ReadShapePoints(FbxObject node)
+        {
+            FbxObject? geometry = _scene.ChildrenOf(node.Id).FirstOrDefault(o => o.Class == "Geometry");
+
+            if (geometry is null)
+                return null;
+
+            MeshGeometry? mesh = FbxMeshReader.Read(geometry, new FbxMeshReader.Options
+            {
+                // Collision geometry carries no UVs, so the flips are irrelevant.
+                InvertU = false,
+                InvertV = false
+            });
+
+            if (mesh is null || mesh.IsEmpty)
+                return null;
+
+            var points = new List<NifVector3>(mesh.Vertices.Count);
+
+            foreach (NifVector3 v in mesh.Vertices)
+            {
+                points.Add(new NifVector3(
+                    v.X * ShapeTessellator.BhkScaleFactorInverse,
+                    v.Y * ShapeTessellator.BhkScaleFactorInverse,
+                    v.Z * ShapeTessellator.BhkScaleFactorInverse));
+            }
+
+            return points;
+        }
+
+        private NifItem BuildBox(IReadOnlyList<NifVector3> points)
+        {
+            (_, NifVector3 half) = ShapeFitter.FitBox(points);
+
+            NifItem shape = _model.InsertBlock("bhkBoxShape");
+            _model.FindItem(shape, "Dimensions")?.Value.Set(half);
+            SetFloat(shape, "Radius", MathF.Min(half.X, MathF.Min(half.Y, half.Z)));
+
+            return shape;
+        }
+
+        private NifItem BuildSphere(IReadOnlyList<NifVector3> points)
+        {
+            (_, float radius) = ShapeFitter.FitSphere(points);
+
+            NifItem shape = _model.InsertBlock("bhkSphereShape");
+            SetFloat(shape, "Radius", radius);
+
+            return shape;
+        }
+
+        private NifItem BuildCapsule(IReadOnlyList<NifVector3> points)
+        {
+            (NifVector3 first, NifVector3 second, float radius) = ShapeFitter.FitCapsule(points);
+
+            NifItem shape = _model.InsertBlock("bhkCapsuleShape");
+            _model.FindItem(shape, "First Point")?.Value.Set(first);
+            _model.FindItem(shape, "Second Point")?.Value.Set(second);
+            SetFloat(shape, "Radius", radius);
+            SetFloat(shape, "Radius 1", radius);
+            SetFloat(shape, "Radius 2", radius);
+
+            return shape;
+        }
+
+        private NifItem BuildConvex(IReadOnlyList<NifVector3> points)
+        {
+            (List<NifVector4> vertices, List<NifVector4> planes) = ShapeFitter.FitConvex(points);
+
+            NifItem shape = _model.InsertBlock("bhkConvexVerticesShape");
+            SetFloat(shape, "Radius", 0.01f);
+
+            if (_model.SetArraySize(shape, "Num Vertices", "Vertices", vertices.Count) is { } vertexArray)
+            {
+                for (int i = 0; i < vertices.Count && i < vertexArray.Children.Count; i++)
+                    vertexArray.Children[i].Value.Set(vertices[i]);
+            }
+
+            // Havok needs the face planes as well as the points; it does not derive
+            // them from the hull.
+            if (_model.SetArraySize(shape, "Num Normals", "Normals", planes.Count) is { } planeArray)
+            {
+                for (int i = 0; i < planes.Count && i < planeArray.Children.Count; i++)
+                    planeArray.Children[i].Value.Set(planes[i]);
+            }
+
+            return shape;
         }
 
         /// <summary>Builds a <c>NiTriShape</c> and its data from an FBX geometry.</summary>
