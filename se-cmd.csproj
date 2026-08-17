@@ -20,6 +20,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="External\nifxml\nif.xml" LogicalName="nif.xml" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Mutagen.Bethesda.Skyrim" Version="0.51.0" />
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta7.25380.108" />
   </ItemGroup>
