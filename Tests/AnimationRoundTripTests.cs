@@ -78,12 +78,16 @@ namespace SECmd.Tests
                 .ToHashSet(StringComparer.Ordinal);
 
             // A node the controller does not list stays still however many keys name
-            // it, since this is what binds a sequence's tracks to real blocks.
+            // it, since this is what binds a sequence's transform tracks to real
+            // blocks. Nodes with only property tracks are deliberately absent: this
+            // controller drives transforms and nothing else.
             foreach (AnimSequence sequence in model.ReadAnimations())
             {
-                foreach (AnimTrack track in sequence.Tracks)
+                foreach (AnimTrack track in sequence.Tracks.Where(t => t.Curves.Any(c => c.HasKeys)))
                     Assert.Contains(track.NodeName, targets);
             }
+
+            Assert.Equal(["Low02"], targets);
         }
 
         [Fact]
@@ -160,10 +164,8 @@ namespace SECmd.Tests
 
             AnimSequence after = model.ReadAnimations().First(s => s.Name == "mBegin");
 
-            AnimTrack from = before.Tracks[0];
-            AnimTrack to = Assert.Single(after.Tracks);
-
-            Assert.Equal(from.NodeName, to.NodeName);
+            AnimTrack from = before.Tracks.First(t => t.NodeName == "Low02");
+            AnimTrack to = after.Tracks.First(t => t.NodeName == "Low02");
 
             for (int axis = 0; axis < 3; axis++)
             {

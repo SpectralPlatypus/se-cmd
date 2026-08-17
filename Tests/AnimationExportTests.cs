@@ -94,11 +94,19 @@ namespace SECmd.Tests
                 }
             }
 
-            // The fixture animates one node's rotation and translation only.
-            Assert.All(bound, b => Assert.Equal("Low02", b.Model));
+            // Low02 is the only node whose transform moves; the rest of the fixture
+            // animates shader and emitter properties instead.
             Assert.Contains(("Low02", "Lcl Rotation"), bound);
             Assert.Contains(("Low02", "Lcl Translation"), bound);
             Assert.DoesNotContain(("Low02", "Lcl Scaling"), bound);
+
+            Assert.All(
+                bound.Where(b => b.Property.StartsWith("Lcl ", StringComparison.Ordinal)),
+                b => Assert.Equal("Low02", b.Model));
+
+            // The particle system's emitter is switched on and off by name.
+            Assert.Contains(bound, b => b.Model == "PCloud06"
+                && b.Property.Contains("EmitterActive", StringComparison.Ordinal));
         }
 
         [Fact]
@@ -106,18 +114,22 @@ namespace SECmd.Tests
         {
             (FbxScene scene, _) = Export();
 
-            string[] axes = ["d|X", "d|Y", "d|Z"];
-
             foreach (FbxObject curve in scene.OfClass("AnimationCurve"))
             {
                 FbxConnection c = Assert.Single(
                     scene.Connections,
                     c => c.Kind == FbxConnectionKind.ObjectProperty && c.SourceId == curve.Id);
 
-                // A curve bound to a property FBX does not recognise as a component
+                FbxObject? node = scene[c.DestinationId];
+
+                Assert.Equal("AnimationCurveNode", node?.Class);
+
+                // A curve names its channel with a "d|" prefix, whether that is one
+                // axis of a vector or the whole of a scalar property. Anything else
                 // is read as driving nothing.
-                Assert.Contains(c.PropertyName, axes);
-                Assert.Equal("AnimationCurveNode", scene[c.DestinationId]?.Class);
+                Assert.StartsWith("d|", c.PropertyName);
+                Assert.True(node!.Properties.Contains(c.PropertyName),
+                    $"curve node has no channel {c.PropertyName}");
             }
         }
 
