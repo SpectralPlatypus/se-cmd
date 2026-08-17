@@ -194,16 +194,10 @@ namespace SECmd.Tests
         }
 
         [Fact]
-        public void BsTriShapeGeometryIsNotConvertedYet()
+        public void BsTriShapeGeometryConvertsToFbx()
         {
-            // Skyrim SE stores geometry in BSTriShape, which inherits NiAVObject
-            // directly rather than NiTriBasedGeom, so the converter currently treats
-            // it as a plain node and emits no mesh.
-            //
-            // This is a real gap rather than a quirk of this fixture: it means SE
-            // meshes export as an empty hierarchy. Asserted here so the day it is
-            // fixed, this test fails and gets updated rather than the gap going
-            // unnoticed.
+            // Skyrim SE stores geometry in BSTriShape, which packs its vertex data
+            // inline and inherits NiAVObject directly rather than NiTriBasedGeom.
             NifModel model = NifModel.Load(PathTo("TestNifFile_Skinned_SE.nif"), Db);
 
             Assert.Contains(model.Blocks, b => b.Name == "BSTriShape");
@@ -211,7 +205,62 @@ namespace SECmd.Tests
             var converter = new NifToFbx(model);
             var scene = new FbxScene(converter.Convert());
 
-            Assert.Empty(scene.OfClass("Geometry"));
+            Assert.Empty(converter.Warnings);
+            Assert.Equal(2, scene.OfClass("Geometry").Count());
+        }
+
+        [Fact]
+        public void BsTriShapeVertexDataIsDecoded()
+        {
+            NifModel model = NifModel.Load(PathTo("TestNifFile_Skinned_SE.nif"), Db);
+
+            // A skinned SE shape stores nothing in itself: both the vertex data and
+            // the triangles live in the skin partition, and the shape's own counts
+            // are zero. So the expected numbers come from the partition.
+            NifItem shape = model.Blocks.First(b => b.Name == "BSTriShape");
+            Assert.Equal(0u, model.GetUInt(shape, "Num Vertices"));
+
+            NifItem partition = model.Blocks.First(b => b.Name == "NiSkinPartition");
+            NifItem entry = model.FindItem(partition, "Partitions")!.Children[0];
+
+            uint declaredVertices = model.GetUInt(entry, "Num Vertices");
+            uint declaredTriangles = model.GetUInt(entry, "Num Triangles");
+
+            var scene = new FbxScene(new NifToFbx(model).Convert());
+            FbxObject geometry = scene.OfClass("Geometry").First();
+
+            var vertices = (double[])geometry.Child("Vertices")!.Properties[0]!;
+            var indices = (int[])geometry.Child("PolygonVertexIndex")!.Properties[0]!;
+
+            Assert.Equal((int)declaredVertices, vertices.Length / 3);
+            Assert.Equal((int)declaredTriangles, indices.Length / 3);
+
+            // Positions come from a packed vertex struct, so a decoding slip shows
+            // up as everything collapsing to the origin.
+            bool anyNonZero = vertices.Any(v => Math.Abs(v) > 1e-6);
+            Assert.True(anyNonZero, "decoded vertices are all at the origin");
+        }
+
+        [Fact]
+        public void BsTriShapeNormalsAndUvsSurvive()
+        {
+            NifModel model = NifModel.Load(PathTo("TestNifFile_Skinned_SE.nif"), Db);
+
+            var scene = new FbxScene(new NifToFbx(model).Convert());
+            FbxObject geometry = scene.OfClass("Geometry").First();
+
+            var normals = geometry.Child("LayerElementNormal");
+            var uvs = geometry.Child("LayerElementUV");
+
+            Assert.NotNull(normals);
+            Assert.NotNull(uvs);
+
+            // Normals are stored as signed bytes, so a unit length is the check that
+            // the -1..1 expansion happened.
+            var data = (double[])normals!.Nodes.First(n => n.Name == "Normals").Properties[0]!;
+
+            double length = Math.Sqrt(data[0] * data[0] + data[1] * data[1] + data[2] * data[2]);
+            Assert.InRange(length, 0.9, 1.1);
         }
 
         [Fact]

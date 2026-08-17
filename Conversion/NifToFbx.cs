@@ -89,7 +89,12 @@ namespace SECmd.Conversion
                 return existing;
 
             // Geometry is an attribute of a node in FBX, not a node itself.
-            if (_model.BlockInherits(block, "NiTriBasedGeom"))
+            //
+            // Two unrelated block families carry it. NiTriBasedGeom keeps its data
+            // in a separate NiTriShapeData; BSTriShape, which Skyrim SE uses, packs
+            // everything inline and inherits NiAVObject directly rather than
+            // NiTriBasedGeom, so it needs testing for separately.
+            if (_model.BlockInherits(block, "NiTriBasedGeom") || _model.BlockInherits(block, "BSTriShape"))
             {
                 ConvertGeometry(scene, block, parent);
                 return null;
@@ -450,15 +455,30 @@ namespace SECmd.Conversion
 
         private void ConvertGeometry(FbxScene scene, NifItem shape, FbxObject? parent)
         {
-            NifItem? data = _model.GetRef(shape, "Data");
+            MeshGeometry? mesh;
 
-            if (data is null)
+            if (_model.BlockInherits(shape, "BSTriShape"))
             {
-                Warnings.Add($"{_model.GetName(shape)} has no geometry data");
-                return;
+                mesh = ReadBsTriShapeGeometry(shape);
+            }
+            else
+            {
+                NifItem? data = _model.GetRef(shape, "Data");
+
+                if (data is null)
+                {
+                    Warnings.Add($"{_model.GetName(shape)} has no geometry data");
+                    return;
+                }
+
+                mesh = ReadGeometry(shape, data);
             }
 
-            MeshGeometry mesh = ReadGeometry(shape, data);
+            if (mesh is null)
+            {
+                Warnings.Add($"{_model.GetName(shape)} has no readable geometry");
+                return;
+            }
 
             if (mesh.IsEmpty)
             {
@@ -590,6 +610,156 @@ namespace SECmd.Conversion
 
             return mesh;
         }
+
+        /// <summary>
+        /// Reads a <c>BSTriShape</c>, which packs its vertex data inline rather than
+        /// in a separate data block.
+        /// </summary>
+        /// <remarks>
+        /// Each vertex is a struct whose fields are present or absent according to
+        /// the flags in <c>Vertex Desc</c>, and whose positions may be full floats
+        /// or halves depending on the same flags. The reader already resolves all of
+        /// that — the array is a "fixed compound", so the layout is decided once
+        /// from the first element — which leaves only reading the values out.
+        ///
+        /// The bitangent is the awkward one: it is split across three separate
+        /// fields, X alongside the position and Y and Z alongside the normal and
+        /// tangent, because it is packed into the spare lanes of those vectors.
+        /// </remarks>
+        private MeshGeometry? ReadBsTriShapeGeometry(NifItem shape)
+        {
+            NifItem? vertexData = _model.FindItem(shape, "Vertex Data");
+            NifItem? triangleSource = shape;
+            List<ushort>? vertexMap = null;
+
+            // A skinned Skyrim SE shape keeps nothing in itself: the vertex data and
+            // the triangles both live in the skin partition, and the shape's own
+            // counts are zero. Follow the skin when that is the case.
+            if (vertexData is null || vertexData.Children.Count == 0)
+            {
+                NifItem? partition = FindSkinPartition(shape);
+
+                if (partition is null)
+                    return null;
+
+                vertexData = _model.FindItem(partition, "Vertex Data");
+
+                // Triangles sit inside the partitions, indexed partition-locally,
+                // with a vertex map back to the shared vertex array.
+                NifItem? partitions = _model.FindItem(partition, "Partitions");
+                triangleSource = partitions?.Child(0);
+
+                if (triangleSource is not null && _model.FindItem(triangleSource, "Vertex Map") is { } map)
+                {
+                    vertexMap = [];
+
+                    foreach (NifItem entry in map.Children)
+                        vertexMap.Add((ushort)entry.Value.ToUInt());
+                }
+
+                if (partitions is { Children.Count: > 1 })
+                {
+                    Warnings.Add(
+                        $"{_model.GetName(shape)}: only the first of {partitions.Children.Count} skin partitions is converted");
+                }
+            }
+
+            if (vertexData is null || vertexData.Children.Count == 0)
+                return null;
+
+            var mesh = new MeshGeometry();
+            NifTransform transform = _model.GetTransform(shape);
+
+            // Which attributes are present is fixed for the whole array.
+            NifItem first = vertexData.Children[0];
+
+            bool hasNormals = _model.FindItem(first, "Normal") is not null;
+            bool hasTangents = _model.FindItem(first, "Tangent") is not null;
+            bool hasUvs = _model.FindItem(first, "UV") is not null;
+            bool hasColors = _model.FindItem(first, "Vertex Colors") is not null;
+
+            foreach (NifItem vertex in vertexData.Children)
+            {
+                NifVector3 position = _model.FindItem(vertex, "Vertex")?.Value.Get<NifVector3>() ?? new NifVector3();
+                mesh.Vertices.Add(transform.Apply(position));
+
+                if (hasNormals)
+                {
+                    NifVector3 normal = _model.FindItem(vertex, "Normal")?.Value.Get<NifVector3>() ?? new NifVector3();
+                    mesh.Normals.Add(transform.ApplyDirection(normal));
+                }
+
+                if (hasTangents)
+                {
+                    NifVector3 tangent = _model.FindItem(vertex, "Tangent")?.Value.Get<NifVector3>() ?? new NifVector3();
+                    mesh.Tangents.Add(transform.ApplyDirection(tangent));
+
+                    // Reassembled from the three lanes it was packed into.
+                    var bitangent = new NifVector3(
+                        _model.FindItem(vertex, "Bitangent X")?.Value.ToFloat() ?? 0f,
+                        ByteToSNorm(_model.FindItem(vertex, "Bitangent Y")),
+                        ByteToSNorm(_model.FindItem(vertex, "Bitangent Z")));
+
+                    mesh.Bitangents.Add(transform.ApplyDirection(bitangent));
+                }
+
+                if (hasUvs)
+                {
+                    NifVector2 uv = _model.FindItem(vertex, "UV")?.Value.Get<NifVector2>() ?? new NifVector2();
+                    mesh.Uvs.Add(new NifVector2(uv.X, 1f - uv.Y));
+                }
+
+                if (hasColors)
+                    mesh.Colors.Add(_model.FindItem(vertex, "Vertex Colors")?.Value.Get<NifColor4>()
+                                    ?? new NifColor4(1f, 1f, 1f, 1f));
+            }
+
+            if (triangleSource is not null && _model.FindItem(triangleSource, "Triangles") is { } triangles)
+            {
+                foreach (NifItem item in triangles.Children)
+                {
+                    NifTriangle t = item.Value.Get<NifTriangle>();
+
+                    // Partition triangles index the partition's own vertex list.
+                    if (vertexMap is not null)
+                    {
+                        if (t.V1 >= vertexMap.Count || t.V2 >= vertexMap.Count || t.V3 >= vertexMap.Count)
+                            continue;
+
+                        t = new NifTriangle(vertexMap[t.V1], vertexMap[t.V2], vertexMap[t.V3]);
+                    }
+
+                    if (t.V1 < mesh.Vertices.Count && t.V2 < mesh.Vertices.Count && t.V3 < mesh.Vertices.Count)
+                        mesh.Triangles.Add(t);
+                }
+            }
+
+            return mesh;
+        }
+
+        /// <summary>The skin partition a shape's geometry lives in, if it is skinned.</summary>
+        private NifItem? FindSkinPartition(NifItem shape)
+        {
+            NifItem? skin = _model.GetRef(shape, "Skin");
+
+            if (skin is null)
+                return null;
+
+            // The partition may hang off the skin instance or off its data.
+            if (_model.GetRef(skin, "Skin Partition") is { } fromInstance)
+                return fromInstance;
+
+            NifItem? data = _model.GetRef(skin, "Data");
+
+            return data is null ? null : _model.GetRef(data, "Skin Partition");
+        }
+
+        /// <summary>
+        /// Expands a packed byte back to the -1..1 range, as the vertex formats
+        /// store the spare bitangent lanes.
+        /// </summary>
+        private static float ByteToSNorm(NifItem? item) =>
+            item is null ? 0f : (float)(item.Value.ToUInt() / 255.0 * 2.0 - 1.0);
     }
 
     /// <summary>
