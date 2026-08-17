@@ -18,4 +18,9 @@
     <ProjectReference Include="..\se-cmd.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Sample assets from ck-cmd's examples/blender, used as round-trip fixtures. -->
+    <None Include="Resources\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
