@@ -21,9 +21,25 @@ namespace SECmd.Nif
         public const int MaxInfluences = 4;
 
         /// <summary>
+        /// The most bones a single partition may reference.
+        /// </summary>
+        /// <remarks>
+        /// The skinning shader addresses bones through a fixed-size palette, so a
+        /// partition naming more than this cannot be drawn. Splitting the mesh until
+        /// each piece fits is the only way to skin something with more bones than
+        /// the palette holds, which is why body-covering armour arrives already
+        /// split across several partitions.
+        /// </remarks>
+        public const int MaxBonesPerPartition = 60;
+
+        /// <summary>
         /// Writes a skin for a shape, given the bone nodes it refers to.
         /// </summary>
         /// <param name="boneNodes">The skeleton nodes, by name.</param>
+        /// <param name="triangles">
+        /// The shape's triangles. The partition carries its own copy, remapped to
+        /// its local vertices, because that is what the renderer draws.
+        /// </param>
         /// <returns>Names of bones that had no node, whose influence was dropped.</returns>
         public static List<string> WriteSkin(
             this NifModel model,
@@ -31,7 +47,8 @@ namespace SECmd.Nif
             SkinData skin,
             IReadOnlyDictionary<string, NifItem> boneNodes,
             NifItem skeletonRoot,
-            int vertexCount)
+            int vertexCount,
+            IReadOnlyList<NifTriangle> triangles)
         {
             var missing = new List<string>();
 
@@ -72,13 +89,19 @@ namespace SECmd.Nif
                     boneRefs.Children[i].Value.SetLink(model.IndexOf(nodes[i]));
             }
 
+            WriteSkinData(model, data, skin, bones);
+
+            var groups = SplitIntoPartitions(skin, bones.Count, vertexCount, triangles);
+            WriteSkinPartitions(model, partition, skin, bones, groups);
+
             // One body-part entry per partition, which is what makes this a
             // dismember instance rather than a plain skin.
-            if (model.SetArraySize(instance, "Num Partitions", "Partitions", 1) is { Children.Count: > 0 } parts)
-                model.FindItem(parts.Children[0], "Body Part")?.Value.SetCount(0);
-
-            WriteSkinData(model, data, skin, bones);
-            WriteSkinPartition(model, partition, skin, bones, vertexCount);
+            if (model.SetArraySize(instance, "Num Partitions", "Partitions", groups.Count)
+                is { } parts)
+            {
+                for (int i = 0; i < groups.Count && i < parts.Children.Count; i++)
+                    model.FindItem(parts.Children[i], "Body Part")?.Value.SetCount(0);
+            }
 
             // BSTriShape names the field Skin, NiGeometry names it Skin Instance.
             if (model.FindItem(shape, "Skin Instance") is not null)
@@ -87,6 +110,118 @@ namespace SECmd.Nif
                 model.SetRef(shape, "Skin", instance);
 
             return missing;
+        }
+
+        /// <summary>One partition's share of the mesh.</summary>
+        private sealed class PartitionGroup
+        {
+            /// <summary>Global vertex indices, in the order the partition lists them.</summary>
+            public List<ushort> Vertices { get; } = [];
+
+            /// <summary>Skin bone indices this partition references.</summary>
+            public List<int> Bones { get; } = [];
+
+            /// <summary>Triangles in global vertex indices; remapped when written.</summary>
+            public List<NifTriangle> Triangles { get; } = [];
+        }
+
+        /// <summary>
+        /// Divides a mesh into partitions each referencing no more bones than the
+        /// shader palette holds.
+        /// </summary>
+        /// <remarks>
+        /// Triangles are the unit of division, since a triangle cannot be drawn by
+        /// two partitions. Each is placed in the first partition whose bone set can
+        /// still absorb its bones, which keeps the count low without the cost of
+        /// searching for an optimal packing — the aim is only to fit the palette,
+        /// not to minimise partitions.
+        ///
+        /// A mesh whose bones already fit is left whole, both because splitting it
+        /// would gain nothing and because that keeps the common case identical to
+        /// what it was before splitting existed.
+        /// </remarks>
+        private static List<PartitionGroup> SplitIntoPartitions(
+            SkinData skin, int boneCount, int vertexCount, IReadOnlyList<NifTriangle> triangles)
+        {
+            var byVertex = skin.ByVertex();
+
+            // The common case: everything fits, so the partition is the whole mesh
+            // and the vertex map is the identity.
+            if (boneCount <= MaxBonesPerPartition)
+            {
+                var whole = new PartitionGroup();
+
+                for (int i = 0; i < vertexCount; i++)
+                    whole.Vertices.Add((ushort)i);
+
+                for (int i = 0; i < boneCount; i++)
+                    whole.Bones.Add(i);
+
+                whole.Triangles.AddRange(triangles);
+
+                return [whole];
+            }
+
+            var groups = new List<PartitionGroup>();
+            var boneSets = new List<HashSet<int>>();
+
+            foreach (NifTriangle triangle in triangles)
+            {
+                var needed = new HashSet<int>();
+
+                foreach (ushort vertex in new[] { triangle.V1, triangle.V2, triangle.V3 })
+                {
+                    if (byVertex.TryGetValue(vertex, out var influences))
+                    {
+                        foreach ((int bone, float _) in influences)
+                            needed.Add(bone);
+                    }
+                }
+
+                int at = -1;
+
+                for (int i = 0; i < groups.Count; i++)
+                {
+                    // Counting the union rather than adding first, so a triangle
+                    // that would overflow does not corrupt the set it was tested
+                    // against.
+                    int union = boneSets[i].Count + needed.Count(b => !boneSets[i].Contains(b));
+
+                    if (union <= MaxBonesPerPartition)
+                    {
+                        at = i;
+                        break;
+                    }
+                }
+
+                if (at < 0)
+                {
+                    groups.Add(new PartitionGroup());
+                    boneSets.Add([]);
+                    at = groups.Count - 1;
+                }
+
+                groups[at].Triangles.Add(triangle);
+                boneSets[at].UnionWith(needed);
+            }
+
+            // Each partition lists only the vertices and bones it actually uses.
+            for (int i = 0; i < groups.Count; i++)
+            {
+                var used = new SortedSet<ushort>();
+
+                foreach (NifTriangle triangle in groups[i].Triangles)
+                {
+                    used.Add(triangle.V1);
+                    used.Add(triangle.V2);
+                    used.Add(triangle.V3);
+                }
+
+                groups[i].Vertices.AddRange(used);
+                groups[i].Bones.AddRange(boneSets[i].Order());
+            }
+
+            return groups.Count > 0 ? groups : [new PartitionGroup()];
         }
 
         /// <summary>Writes the bind pose and the per-bone weights.</summary>
@@ -122,51 +257,78 @@ namespace SECmd.Nif
         }
 
         /// <summary>
-        /// Writes the partition the renderer uses: the same weights, arranged per
+        /// Writes the partitions the renderer draws: the same weights, arranged per
         /// vertex with a fixed four slots each.
         /// </summary>
-        /// <remarks>
-        /// Everything is emitted as a single partition. Splitting exists to keep a
-        /// partition's bone count within what the shader can address, so it only
-        /// matters past sixty-odd bones; a single partition is correct below that
-        /// and simpler to get right.
-        /// </remarks>
-        private static void WriteSkinPartition(
-            NifModel model, NifItem partition, SkinData skin, List<SkinBone> bones, int vertexCount)
+        private static void WriteSkinPartitions(
+            NifModel model, NifItem partition, SkinData skin, List<SkinBone> bones, List<PartitionGroup> groups)
         {
-            if (model.SetArraySize(partition, "Num Partitions", "Partitions", 1)
-                is not { Children.Count: > 0 } partitions)
+            if (model.SetArraySize(partition, "Num Partitions", "Partitions", groups.Count)
+                is not { } partitions)
             {
                 return;
             }
 
-            NifItem entry = partitions.Children[0];
             var byVertex = skin.ByVertex();
 
-            model.FindItem(entry, "Num Vertices")?.Value.SetCount((uint)vertexCount);
-            model.FindItem(entry, "Num Bones")?.Value.SetCount((uint)bones.Count);
+            for (int p = 0; p < groups.Count && p < partitions.Children.Count; p++)
+                WriteOnePartition(model, partitions.Children[p], groups[p], byVertex);
+        }
+
+        private static void WriteOnePartition(
+            NifModel model,
+            NifItem entry,
+            PartitionGroup group,
+            Dictionary<ushort, List<(int Bone, float Weight)>> byVertex)
+        {
+            // Everything inside a partition is addressed locally, so build the two
+            // translations from global indices first.
+            var localVertex = new Dictionary<ushort, ushort>();
+
+            for (int i = 0; i < group.Vertices.Count; i++)
+                localVertex[group.Vertices[i]] = (ushort)i;
+
+            var localBone = new Dictionary<int, int>();
+
+            for (int i = 0; i < group.Bones.Count; i++)
+                localBone[group.Bones[i]] = i;
+
+            model.FindItem(entry, "Num Vertices")?.Value.SetCount((uint)group.Vertices.Count);
+            model.FindItem(entry, "Num Triangles")?.Value.SetCount((uint)group.Triangles.Count);
+            model.FindItem(entry, "Num Bones")?.Value.SetCount((uint)group.Bones.Count);
             model.FindItem(entry, "Num Weights Per Vertex")?.Value.SetCount(MaxInfluences);
+            model.FindItem(entry, "Num Strips")?.Value.SetCount(0);
             model.FindItem(entry, "Has Vertex Map")?.Value.SetCount(1);
             model.FindItem(entry, "Has Vertex Weights")?.Value.SetCount(1);
             model.FindItem(entry, "Has Bone Indices")?.Value.SetCount(1);
             model.FindItem(entry, "Has Faces")?.Value.SetCount(1);
 
-            // The partition addresses the skin's bones through its own list, so with
-            // one partition that list is just the identity.
-            if (model.SetArraySize(entry, "Num Bones", "Bones", bones.Count) is { } boneList)
+            // The partition reaches the skin's bones through this list.
+            if (model.SetArraySize(entry, "Num Bones", "Bones", group.Bones.Count) is { } boneList)
             {
-                for (int i = 0; i < bones.Count && i < boneList.Children.Count; i++)
-                    boneList.Children[i].Value.SetCount((uint)i);
+                for (int i = 0; i < group.Bones.Count && i < boneList.Children.Count; i++)
+                    boneList.Children[i].Value.SetCount((uint)group.Bones[i]);
             }
 
-            // With one partition every vertex is present, so the map is the identity
-            // too. It still has to be written: the reader uses it to translate the
-            // triangle indices.
-            if (model.SetArraySize(entry, "Num Vertices", "Vertex Map", vertexCount) is { } map)
+            // ...and the shape's vertices through this one, which is also what
+            // translates the triangle indices back on the way in.
+            if (model.SetArraySize(entry, "Num Vertices", "Vertex Map", group.Vertices.Count) is { } map)
             {
-                for (int i = 0; i < vertexCount && i < map.Children.Count; i++)
-                    map.Children[i].Value.SetCount((uint)i);
+                for (int i = 0; i < group.Vertices.Count && i < map.Children.Count; i++)
+                    map.Children[i].Value.SetCount(group.Vertices[i]);
             }
+
+            var local = group.Triangles.Select(t => new NifTriangle(
+                localVertex.GetValueOrDefault(t.V1),
+                localVertex.GetValueOrDefault(t.V2),
+                localVertex.GetValueOrDefault(t.V3))).ToList();
+
+            WriteTriangles(model, entry, "Triangles", local);
+
+            // Special Edition repeats the triangles at the end of the partition,
+            // both counted by the same Num Triangles. Leaving the copy empty while
+            // the count is non-zero desynchronises every block after this one.
+            WriteTriangles(model, entry, "Triangles Copy", local);
 
             // Both of these are two-dimensional: one row per vertex, each holding
             // Num Weights Per Vertex slots. Sizing the outer array creates the rows
@@ -175,16 +337,18 @@ namespace SECmd.Nif
             NifItem? weights = SizeGrid(model, entry, "Vertex Weights");
             NifItem? indices = SizeGrid(model, entry, "Bone Indices");
 
-            for (int v = 0; v < vertexCount; v++)
+            for (int v = 0; v < group.Vertices.Count; v++)
             {
-                byVertex.TryGetValue((ushort)v, out List<(int Bone, float Weight)>? influences);
+                byVertex.TryGetValue(group.Vertices[v], out List<(int Bone, float Weight)>? influences);
 
                 for (int slot = 0; slot < MaxInfluences; slot++)
                 {
                     bool present = influences is not null && slot < influences.Count;
 
                     float weight = present ? influences![slot].Weight : 0f;
-                    uint bone = present ? (uint)influences![slot].Bone : 0u;
+
+                    // Bone indices are local to the partition, not to the skin.
+                    uint bone = present ? (uint)localBone.GetValueOrDefault(influences![slot].Bone) : 0u;
 
                     if (weights is not null && v < weights.Children.Count
                         && slot < weights.Children[v].Children.Count)
@@ -199,6 +363,19 @@ namespace SECmd.Nif
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Fills one of a partition's triangle arrays, if the version has it.
+        /// </summary>
+        private static void WriteTriangles(
+            NifModel model, NifItem entry, string field, List<NifTriangle> triangles)
+        {
+            if (model.SetArraySize(entry, "Num Triangles", field, triangles.Count) is not { } array)
+                return;
+
+            for (int i = 0; i < triangles.Count && i < array.Children.Count; i++)
+                array.Children[i].Value.Set(triangles[i]);
         }
 
         /// <summary>

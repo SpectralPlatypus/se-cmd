@@ -665,13 +665,18 @@ namespace SECmd.Conversion
             // been converted yet, so skins are wired up once the whole tree is
             // built.
             if (FbxSkinIO.ReadSkin(_scene, geometry) is { } skin)
-                _pendingSkins.Add((shape, skin, mesh.Vertices.Count));
+                _pendingSkins.Add((shape, skin, mesh.Vertices.Count, mesh.Triangles));
 
             return shape;
         }
 
         /// <summary>Skins waiting for the whole node tree to exist.</summary>
-        private readonly List<(NifItem Shape, SkinData Skin, int VertexCount)> _pendingSkins = [];
+        /// <remarks>
+        /// The triangles come along because a partition carries its own copy of
+        /// them, remapped to the vertices that partition lists.
+        /// </remarks>
+        private readonly List<(NifItem Shape, SkinData Skin, int VertexCount, List<NifTriangle> Triangles)>
+            _pendingSkins = [];
 
         /// <summary>Nodes by name, for resolving bones.</summary>
         private readonly Dictionary<string, NifItem> _nodesByName = new(StringComparer.Ordinal);
@@ -681,9 +686,9 @@ namespace SECmd.Conversion
         /// </summary>
         private void BuildPendingSkins(NifItem root)
         {
-            foreach ((NifItem shape, SkinData skin, int vertexCount) in _pendingSkins)
+            foreach ((NifItem shape, SkinData skin, int vertexCount, var triangles) in _pendingSkins)
             {
-                var missing = _model.WriteSkin(shape, skin, _nodesByName, root, vertexCount);
+                var missing = _model.WriteSkin(shape, skin, _nodesByName, root, vertexCount, triangles);
 
                 foreach (string bone in missing)
                     Warnings.Add($"{_model.GetName(shape)}: no node named \"{bone}\", its influence is dropped");
