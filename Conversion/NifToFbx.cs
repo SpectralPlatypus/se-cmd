@@ -12,6 +12,9 @@ namespace SECmd.Conversion
 
         /// <summary>Emit the tessellated geometry of Havok collision shapes.</summary>
         public bool ExportCollision { get; set; } = true;
+
+        /// <summary>Emit the model's transform animation as FBX animation stacks.</summary>
+        public bool ExportAnimation { get; set; } = true;
     }
 
     /// <summary>
@@ -50,8 +53,45 @@ namespace SECmd.Conversion
             foreach (NifItem root in FindRootBlocks())
                 ConvertNode(scene, root, parent: null);
 
+            // After the tree, because a track binds to a model by name and every
+            // model has to exist before anything can be bound to it.
+            if (_options.ExportAnimation)
+                ConvertAnimation(scene);
+
             scene.Flush();
             return document;
+        }
+
+        /// <summary>Writes the model's sequences as FBX animation stacks.</summary>
+        private void ConvertAnimation(FbxScene scene)
+        {
+            foreach (AnimSequence sequence in _model.ReadAnimations())
+            {
+                foreach (string missing in FbxAnimWriter.AddSequence(scene, sequence, _modelsByName))
+                    Warnings.Add($"{sequence.Name}: no node named \"{missing}\", its animation is dropped");
+            }
+        }
+
+        /// <summary>
+        /// The converted models by their NIF name, for binding animation to.
+        /// </summary>
+        /// <remarks>
+        /// Keyed on the unsanitised name, because that is what a controlled block
+        /// names its target with.
+        /// </remarks>
+        private readonly Dictionary<string, FbxObject> _modelsByName = new(StringComparer.Ordinal);
+
+        /// <summary>Records a converted block under its NIF name, first one wins.</summary>
+        /// <remarks>
+        /// Duplicate names are legal in a NIF and a controlled block cannot tell them
+        /// apart either, so binding to the first is as much as the format allows.
+        /// </remarks>
+        private void Remember(NifItem block, FbxObject node)
+        {
+            string name = _model.GetName(block);
+
+            if (name.Length > 0)
+                _modelsByName.TryAdd(name, node);
         }
 
         /// <summary>
@@ -110,6 +150,7 @@ namespace SECmd.Conversion
 
             FbxObject node = FbxMeshWriter.AddModel(scene, name, "Null", _model.GetTransform(block));
             _built[block] = node;
+            Remember(block, node);
 
             if (parent is null)
                 scene.ConnectToRoot(node);
@@ -506,6 +547,10 @@ namespace SECmd.Conversion
             }
 
             _built[shape] = holder;
+
+            // The holder is the node with the transform, so it is what an animation
+            // track has to drive; the geometry under it never moves on its own.
+            Remember(shape, holder);
         }
 
         /// <summary>
