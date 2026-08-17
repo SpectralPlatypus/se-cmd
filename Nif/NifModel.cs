@@ -783,6 +783,16 @@ namespace SECmd.Nif
 
             UserVersion = GetUInt(_header, "User Version");
             BSVersion = GetUInt(_header, @"BS Header\BS Version");
+
+            // Take over the file's string table, so a model that is loaded, edited
+            // and saved again keeps its existing indices valid.
+            _strings.Clear();
+
+            if (FindItem(_header, "Strings") is { } strings)
+            {
+                foreach (NifItem entry in strings.Children)
+                    _strings.Add(entry.Value.AsString());
+            }
         }
 
         private void SetIfPresent(NifItem parent, string path, uint value)
@@ -990,6 +1000,257 @@ namespace SECmd.Nif
             }
 
             return text.ToString();
+        }
+
+        // --- authoring --------------------------------------------------------
+
+        /// <summary>
+        /// Creates an empty model with a usable header, ready for blocks.
+        /// </summary>
+        /// <remarks>
+        /// Defaults to Skyrim LE: file version 20.2.0.7, user version 12, Bethesda
+        /// stream version 83, which is what FBXWrangler writes (spec §5.8).
+        /// </remarks>
+        public static NifModel CreateNew(
+            NifXmlDatabase database,
+            uint version = 0x14020007,
+            uint userVersion = 12,
+            uint bsVersion = 83)
+        {
+            var model = new NifModel(database)
+            {
+                Version = version,
+                UserVersion = userVersion,
+                BSVersion = bsVersion
+            };
+
+            // The header's own conditions depend on these, so they have to be set
+            // before anything reads the header back.
+            model.SetIfPresent(model._header, "User Version", userVersion);
+            model.SetIfPresent(model._header, @"BS Header\BS Version", bsVersion);
+
+            NifItem? versionItem = FindItemIgnoringConditions(model._header, "Version");
+            versionItem?.Value.SetCount(version);
+
+            NifItem? banner = FindItemIgnoringConditions(model._header, "Header String");
+            banner?.Value.Set(version <= 0x0A000100
+                ? $"NetImmerse File Format, Version {NifVersion.ToVersionString(version)}"
+                : $"Gamebryo File Format, Version {NifVersion.ToVersionString(version)}");
+
+            // 1 is little-endian; every PC-era NIF is.
+            NifItem? endian = FindItemIgnoringConditions(model._header, "Endian Type");
+            endian?.Value.SetCount(1);
+
+            model._header.InvalidateConditionsRecursive();
+            return model;
+        }
+
+        private readonly List<string> _strings = [];
+
+        /// <summary>
+        /// Interns a string in the header table and returns its index, which is what
+        /// a <c>string</c> field stores from 20.1.0.3 onward.
+        /// </summary>
+        public int AddString(string value)
+        {
+            if (value.Length == 0)
+                return -1;
+
+            int existing = _strings.IndexOf(value);
+
+            if (existing >= 0)
+                return existing;
+
+            _strings.Add(value);
+            return _strings.Count - 1;
+        }
+
+        /// <summary>
+        /// Sets a string field, interning the text when the file version stores
+        /// strings as indices into the header table.
+        /// </summary>
+        /// <remarks>
+        /// The decision is made from the file version, not from the item's current
+        /// type. A field declared <c>string</c> only becomes a
+        /// <see cref="NifValueType.StringIndex"/> when the *reader* converts it, so
+        /// on a model built from scratch it is still
+        /// <see cref="NifValueType.String"/> — and the writer would then emit its
+        /// numeric value, silently dropping the text.
+        /// </remarks>
+        public void SetString(NifItem block, string field, string value)
+        {
+            NifItem? item = FindItem(block, field);
+
+            if (item is null)
+                return;
+
+            bool usesStringTable = Version >= 0x14010003
+                && item.Value.Type is NifValueType.String or NifValueType.FilePath or NifValueType.StringIndex;
+
+            if (usesStringTable)
+            {
+                item.Value.ChangeType(NifValueType.StringIndex);
+                item.Value.SetCount(unchecked((uint)AddString(value)));
+            }
+            else
+            {
+                item.Value.Set(value);
+            }
+        }
+
+        /// <summary>
+        /// Resizes an array field and its count together, which is the only safe way
+        /// to grow one: the length expression reads the count.
+        /// </summary>
+        public NifItem? SetArraySize(NifItem block, string countField, string arrayField, int size)
+        {
+            NifItem? count = FindItem(block, countField);
+            count?.Value.SetCount((uint)size);
+
+            NifItem? array = FindItem(block, arrayField);
+
+            if (array is null)
+                return null;
+
+            // The cached condition may have been decided before the count changed.
+            array.InvalidateConditionsRecursive();
+            UpdateArraySize(array);
+            return array;
+        }
+
+        /// <summary>
+        /// Recomputes every header field derived from the block list: the block
+        /// count, the type table, the per-block type indices and sizes, and the
+        /// string table.
+        /// </summary>
+        /// <remarks>
+        /// Must run before <see cref="Save(Stream)"/>. A header disagreeing with the
+        /// blocks is how a NIF ends up unreadable, and nothing else keeps them in
+        /// step.
+        /// </remarks>
+        public void UpdateHeader()
+        {
+            SetIfPresent(_header, "User Version", UserVersion);
+            SetIfPresent(_header, @"BS Header\BS Version", BSVersion);
+
+            NifItem? numBlocks = FindItem(_header, "Num Blocks");
+            numBlocks?.Value.SetCount((uint)_blocks.Count);
+
+            // Distinct block types, in first-use order.
+            var types = new List<string>();
+            var typeIndices = new List<int>();
+
+            foreach (NifItem block in _blocks)
+            {
+                int at = types.IndexOf(block.Name);
+
+                if (at < 0)
+                {
+                    at = types.Count;
+                    types.Add(block.Name);
+                }
+
+                typeIndices.Add(at);
+            }
+
+            SetIfPresent(_header, "Num Block Types", (uint)types.Count);
+
+            if (FindItem(_header, "Block Types") is { } blockTypes)
+            {
+                blockTypes.InvalidateConditionsRecursive();
+                UpdateArraySize(blockTypes);
+
+                for (int i = 0; i < types.Count && i < blockTypes.Children.Count; i++)
+                    blockTypes.Children[i].Value.Set(types[i]);
+            }
+
+            if (FindItem(_header, "Block Type Index") is { } indices)
+            {
+                indices.InvalidateConditionsRecursive();
+                UpdateArraySize(indices);
+
+                for (int i = 0; i < typeIndices.Count && i < indices.Children.Count; i++)
+                    indices.Children[i].Value.SetCount((uint)typeIndices[i]);
+            }
+
+            // Block sizes, which 20.2.0.0+ stores so a reader can skip a block it
+            // does not understand.
+            if (FindItem(_header, "Block Size") is { } sizes)
+            {
+                sizes.InvalidateConditionsRecursive();
+                UpdateArraySize(sizes);
+
+                var sizer = new NifOStream(this, Stream.Null);
+
+                for (int i = 0; i < _blocks.Count && i < sizes.Children.Count; i++)
+                    sizes.Children[i].Value.SetCount((uint)MeasureItem(_blocks[i], sizer));
+            }
+
+            UpdateStringTable();
+        }
+
+        private void UpdateStringTable()
+        {
+            SetIfPresent(_header, "Num Strings", (uint)_strings.Count);
+
+            int longest = 0;
+
+            foreach (string s in _strings)
+                longest = Math.Max(longest, s.Length);
+
+            SetIfPresent(_header, "Max String Length", (uint)longest);
+
+            if (FindItem(_header, "Strings") is not { } strings)
+                return;
+
+            strings.InvalidateConditionsRecursive();
+            UpdateArraySize(strings);
+
+            for (int i = 0; i < _strings.Count && i < strings.Children.Count; i++)
+                strings.Children[i].Value.Set(_strings[i]);
+        }
+
+        /// <summary>The number of bytes an item and everything under it will occupy.</summary>
+        private int MeasureItem(NifItem parent, NifOStream sizer)
+        {
+            int total = 0;
+
+            foreach (NifItem child in parent.Children)
+            {
+                if (child.IsAbstract || !EvalCondition(child))
+                    continue;
+
+                total += child.IsArray || child.HasChildren
+                    ? MeasureItem(child, sizer)
+                    : sizer.SizeOf(child.Value);
+            }
+
+            return total;
+        }
+
+        /// <summary>Points the footer at the given root blocks.</summary>
+        public void SetRoots(IReadOnlyList<NifItem> roots)
+        {
+            SetIfPresent(_footer, "Num Roots", (uint)roots.Count);
+
+            if (FindItem(_footer, "Roots") is not { } array)
+                return;
+
+            array.InvalidateConditionsRecursive();
+            UpdateArraySize(array);
+
+            for (int i = 0; i < roots.Count && i < array.Children.Count; i++)
+                array.Children[i].Value.SetLink(_blocks.IndexOf(roots[i]));
+        }
+
+        /// <summary>The index a link should carry to point at a block.</summary>
+        public int IndexOf(NifItem block) => _blocks.IndexOf(block);
+
+        /// <summary>Points a reference field at a block, or at nothing when null.</summary>
+        public void SetRef(NifItem block, string field, NifItem? target)
+        {
+            NifItem? link = FindItem(block, field);
+            link?.Value.SetLink(target is null ? -1 : IndexOf(target));
         }
 
         // --- convenience ------------------------------------------------------
