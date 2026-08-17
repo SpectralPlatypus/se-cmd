@@ -75,7 +75,10 @@ namespace SECmd.Nif
 
                     tracks.Add((track, node));
 
-                    if (!targets.Contains(node))
+                    // Only nodes whose transform moves belong in the target list: it
+                    // is what the transform controller drives, and a node listed
+                    // there without transform keys would be driven to nothing.
+                    if (track.Curves.Any(c => c.HasKeys) && !targets.Contains(node))
                         targets.Add(node);
                 }
 
@@ -195,23 +198,86 @@ namespace SECmd.Nif
 
             model.SetRef(block, "Text Keys", WriteTextKeys(model, length));
 
-            if (model.SetArraySize(block, "Num Controlled Blocks", "Controlled Blocks", tracks.Count)
+            // A node's transform and each of its properties are separate blocks
+            // here, though they arrived as one track.
+            var entries = new List<(AnimTrack Track, NifItem Node, AnimProperty? Property)>();
+
+            foreach ((AnimTrack track, NifItem node) in tracks)
+            {
+                if (track.Curves.Any(c => c.HasKeys))
+                    entries.Add((track, node, null));
+
+                foreach (AnimProperty property in track.Properties.Where(p => p.Curve.HasKeys))
+                    entries.Add((track, node, property));
+            }
+
+            if (model.SetArraySize(block, "Num Controlled Blocks", "Controlled Blocks", entries.Count)
                 is not { } controlled)
             {
                 return block;
             }
 
-            for (int i = 0; i < tracks.Count && i < controlled.Children.Count; i++)
+            for (int i = 0; i < entries.Count && i < controlled.Children.Count; i++)
             {
-                (AnimTrack track, NifItem node) = tracks[i];
+                (AnimTrack track, NifItem node, AnimProperty? property) = entries[i];
                 NifItem entry = controlled.Children[i];
 
-                model.SetRef(entry, "Interpolator", WriteInterpolator(model, track, sequence.Start));
                 model.SetString(entry, "Node Name", model.GetName(node));
-                model.SetString(entry, "Controller Type", "NiTransformController");
+
+                if (property is null)
+                {
+                    model.SetRef(entry, "Interpolator", WriteInterpolator(model, track, sequence.Start));
+                    model.SetString(entry, "Controller Type", "NiTransformController");
+                    continue;
+                }
+
+                model.SetRef(entry, "Interpolator",
+                    WriteScalarInterpolator(model, property, sequence.Start));
+
+                // The four strings that say which controller on which sub-object
+                // this drives. Without them the keys exist but belong to nothing.
+                model.SetString(entry, "Controller Type", property.ControllerType);
+                model.SetString(entry, "Controller ID", property.ControllerId);
+                model.SetString(entry, "Interpolator ID", property.InterpolatorId);
+                model.SetString(entry, "Property Type", property.PropertyType);
             }
 
             return block;
+        }
+
+        /// <summary>Writes a named scalar track as a float or boolean interpolator.</summary>
+        /// <remarks>
+        /// The two are the same shape — an interpolator pointing at a data block
+        /// holding one key group — and differ only in whether the values are floats
+        /// or bytes. Writing a boolean track as floats would leave the engine reading
+        /// four bytes per key where it expects one.
+        /// </remarks>
+        private static NifItem WriteScalarInterpolator(NifModel model, AnimProperty property, float offset)
+        {
+            NifItem data = model.InsertBlock(property.IsBoolean ? "NiBoolData" : "NiFloatData");
+
+            NifItem keys = SizeGroup(model, data, "Data", property.Curve.Keys.Count,
+                KeyTypeOf([property.Curve]));
+
+            for (int i = 0; i < property.Curve.Keys.Count && i < keys.Children.Count; i++)
+            {
+                AnimKey key = property.Curve.Keys[i];
+
+                model.FindItem(keys.Children[i], "Time")?.Value.SetFloat(key.Time - offset);
+
+                NifItem? value = model.FindItem(keys.Children[i], "Value");
+
+                if (property.IsBoolean)
+                    value?.Value.SetCount(key.Value != 0f ? 1u : 0u);
+                else
+                    value?.Value.SetFloat(key.Value);
+            }
+
+            NifItem interpolator = model.InsertBlock(
+                property.IsBoolean ? "NiBoolInterpolator" : "NiFloatInterpolator");
+
+            model.SetRef(interpolator, "Data", data);
+            return interpolator;
         }
 
         /// <summary>
