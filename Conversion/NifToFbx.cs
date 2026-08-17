@@ -511,6 +511,8 @@ namespace SECmd.Conversion
             FbxObject geometry = FbxMeshWriter.AddGeometry(scene, name, mesh);
             scene.Connect(geometry, holder);
 
+            ConvertSkin(scene, shape, geometry);
+
             if (ReadMaterial(shape, name) is { } material)
             {
                 FbxObject fbxMaterial = FbxMaterialWriter.AddMaterial(scene, material, _options.TexturePath);
@@ -522,6 +524,39 @@ namespace SECmd.Conversion
             }
 
             _built[shape] = holder;
+        }
+
+        /// <summary>
+        /// Attaches a skin to a converted mesh, if the shape has one.
+        /// </summary>
+        /// <remarks>
+        /// Bones are FBX Models, so they must already exist. They do: a bone is a
+        /// NiNode somewhere in the hierarchy, and the walk converts the whole tree
+        /// before any geometry beneath it. A bone the walk never reached is reported
+        /// rather than silently dropping that bone's influence.
+        /// </remarks>
+        private void ConvertSkin(FbxScene scene, NifItem shape, FbxObject geometry)
+        {
+            SkinData? skin = _model.ReadSkin(shape);
+
+            if (skin is null)
+                return;
+
+            var bones = new Dictionary<string, FbxObject>(StringComparer.Ordinal);
+
+            foreach ((NifItem block, FbxObject node) in _built)
+            {
+                if (node.Class != "Model")
+                    continue;
+
+                string name = _model.GetName(block);
+
+                if (name.Length > 0)
+                    bones[name] = node;
+            }
+
+            foreach (string problem in FbxSkinIO.AddSkin(scene, geometry, skin, bones, NifTransform.Identity))
+                Warnings.Add($"{_model.GetName(shape)}: {problem}");
         }
 
         /// <summary>
