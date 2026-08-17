@@ -785,50 +785,38 @@ namespace SECmd.Conversion
             // position, a float taking the fourth lane (the bitangent's X),
             // half-precision UVs, then signed bytes for the normal and tangent with
             // the rest of the bitangent packed into their spare lanes.
-            var offsets = new int[16];
-            int offset = 0;
-
-            offsets[VertexAttribute.Position] = offset;
-            offset += 16; // position and the bitangent's X lane
+            //
+            // The position has no offset member: it is always first.
+            var desc = new BSVertexDesc { Flags = flags };
+            uint offset = 16;
 
             if (mesh.HasUvs)
             {
-                offsets[VertexAttribute.TexCoord0] = offset;
+                desc.Set(BSVertexDesc.Member.UV1Offset, offset);
                 offset += 4;
             }
 
             if (mesh.HasNormals)
             {
-                offsets[VertexAttribute.Normal] = offset;
+                desc.Set(BSVertexDesc.Member.NormalOffset, offset);
                 offset += 4;
             }
 
             if (mesh.HasTangents)
             {
-                offsets[VertexAttribute.Binormal] = offset;
+                desc.Set(BSVertexDesc.Member.TangentOffset, offset);
                 offset += 4;
             }
 
             if (mesh.HasColors)
             {
-                offsets[VertexAttribute.Color] = offset;
+                desc.Set(BSVertexDesc.Member.ColorOffset, offset);
                 offset += 4;
             }
 
-            int vertexSize = offset;
+            desc.VertexSize = offset;
 
-            // The low nibble is the stride, and each nibble after it is one
-            // attribute's byte offset, indexed by its VertexAttribute slot. Both
-            // are stored divided by four. Verified against real SE meshes: a static
-            // one packs to 0x1B00000650407 and a skinned one to 0x5B0007065040A.
-            ulong value = (ulong)(vertexSize / 4) & 0xF;
-
-            for (int attribute = 0; attribute <= VertexAttribute.EyeData; attribute++)
-                value |= ((ulong)(offsets[attribute] / 4) & 0xF) << (4 * (attribute + 1));
-
-            value |= (ulong)flags << 44;
-
-            return (value, vertexSize);
+            return (desc.Value, (int)offset);
         }
 
         /// <summary>Fills a <c>NiTriShapeData</c> from the neutral mesh.</summary>

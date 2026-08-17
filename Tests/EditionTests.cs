@@ -103,10 +103,10 @@ namespace SECmd.Tests
 
             var desc = new BSVertexDesc(model.FindItem(shape, "Vertex Desc")!.Value.ToUInt64());
 
-            // The same packing a real SE mesh uses: position first, its fourth lane
-            // taken by the bitangent, then UV, normal and tangent.
+            // The same packing a real SE mesh uses: the position is always first
+            // and has no offset member, its fourth lane is taken by the bitangent,
+            // then UV, normal and tangent follow.
             Assert.True(desc.HasFlag(VertexFlags.Vertex));
-            Assert.Equal(0u, desc.VertexOffset);
 
             if (desc.HasFlag(VertexFlags.UV))
                 Assert.Equal(16u, desc.UVOffset);

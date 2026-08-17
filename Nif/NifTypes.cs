@@ -176,58 +176,82 @@ namespace SECmd.Nif
     [StructLayout(LayoutKind.Sequential)]
     public struct BSVertexDesc(ulong value)
     {
+        /// <summary>
+        /// Bit positions of each member, exactly as nif.xml's
+        /// <c>&lt;bitfield name="BSVertexDesc"&gt;</c> declares them.
+        /// </summary>
+        /// <remarks>
+        /// Every member is four bits holding a value divided by four, except the
+        /// attribute flags, which are twelve bits at the top. Note there is no
+        /// offset for the position: it is always first in a vertex.
+        /// </remarks>
+        public static class Member
+        {
+            public const int VertexDataSize = 0;
+            public const int DynamicVertexSize = 4;
+            public const int UV1Offset = 8;
+            public const int UV2Offset = 12;
+            public const int NormalOffset = 16;
+            public const int TangentOffset = 20;
+            public const int ColorOffset = 24;
+            public const int SkinningDataOffset = 28;
+            public const int LandscapeDataOffset = 32;
+            public const int EyeDataOffset = 36;
+            public const int Unused = 40;
+            public const int VertexAttributes = 44;
+        }
+
         public ulong Value = value;
 
-        /// <summary>The attribute flags, which live in the nibbles above bit 44.</summary>
+        /// <summary>The attribute flags: twelve bits at position 44.</summary>
         public VertexFlags Flags
         {
-            readonly get => (VertexFlags)((Value >> 44) & 0xFFFF);
-            set => Value = (Value & ~(0xFFFFUL << 44)) | ((ulong)value << 44);
+            readonly get => (VertexFlags)((Value >> Member.VertexAttributes) & 0xFFF);
+            set => Value = (Value & ~(0xFFFUL << Member.VertexAttributes))
+                           | (((ulong)value & 0xFFF) << Member.VertexAttributes);
         }
 
         public readonly bool HasFlag(VertexFlags flag) => (Flags & flag) != 0;
 
-        /// <summary>Vertex stride in bytes; stored divided by four in the low nibble.</summary>
+        /// <summary>Reads a four-bit member, undoing the division by four.</summary>
+        public readonly uint Get(int position) => (uint)((Value >> position) & 0xF) * 4;
+
+        /// <summary>Writes a four-bit member, dividing by four.</summary>
+        public void Set(int position, uint bytes) =>
+            Value = (Value & ~(0xFUL << position)) | ((((ulong)bytes / 4) & 0xF) << position);
+
+        /// <summary>Vertex stride in bytes.</summary>
         public uint VertexSize
         {
-            readonly get => (uint)((Value & 0xF) * 4);
-            set => Value = (Value & ~0xFUL) | (((ulong)value / 4) & 0xF);
+            readonly get => Get(Member.VertexDataSize);
+            set => Set(Member.VertexDataSize, value);
         }
 
         /// <summary>
-        /// The byte offset of one attribute within a vertex.
+        /// Size of the separately stored dynamic vertex data, used by
+        /// <c>BSDynamicTriShape</c>.
         /// </summary>
-        /// <remarks>
-        /// The low nibble is the stride, and each nibble after it holds one
-        /// attribute's offset, indexed by its <see cref="VertexAttribute"/> slot.
-        /// Both are stored divided by four.
-        ///
-        /// Verified against real Skyrim SE meshes: a static one packs to
-        /// 0x1B00000650407, giving position at 0, UV at 16, normal at 20 and
-        /// tangent at 24 for a stride of 28; a skinned one to 0x5B0007065040A,
-        /// adding skinning at 28 for a stride of 40.
-        /// </remarks>
-        public readonly uint OffsetOf(int attribute) =>
-            (uint)((Value >> (4 * (attribute + 1)) & 0xF) * 4);
-
-        /// <summary>Sets one attribute's byte offset.</summary>
-        public void SetOffsetOf(int attribute, uint byteOffset)
+        public uint DynamicVertexSize
         {
-            int shift = 4 * (attribute + 1);
-            Value = (Value & ~(0xFUL << shift)) | ((((ulong)byteOffset / 4) & 0xF) << shift);
+            readonly get => Get(Member.DynamicVertexSize);
+            set => Set(Member.DynamicVertexSize, value);
         }
 
-        public readonly uint VertexOffset => OffsetOf(VertexAttribute.Position);
+        public readonly uint UVOffset => Get(Member.UV1Offset);
 
-        public readonly uint UVOffset => OffsetOf(VertexAttribute.TexCoord0);
+        public readonly uint UV2Offset => Get(Member.UV2Offset);
 
-        public readonly uint NormalOffset => OffsetOf(VertexAttribute.Normal);
+        public readonly uint NormalOffset => Get(Member.NormalOffset);
 
-        public readonly uint TangentOffset => OffsetOf(VertexAttribute.Binormal);
+        public readonly uint TangentOffset => Get(Member.TangentOffset);
 
-        public readonly uint ColorOffset => OffsetOf(VertexAttribute.Color);
+        public readonly uint ColorOffset => Get(Member.ColorOffset);
 
-        public readonly uint SkinningOffset => OffsetOf(VertexAttribute.Skinning);
+        public readonly uint SkinningOffset => Get(Member.SkinningDataOffset);
+
+        public readonly uint LandscapeDataOffset => Get(Member.LandscapeDataOffset);
+
+        public readonly uint EyeDataOffset => Get(Member.EyeDataOffset);
 
         public override readonly string ToString() => $"0x{Value:X16} ({Flags}, stride {VertexSize})";
     }
