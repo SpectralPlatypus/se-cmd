@@ -35,6 +35,97 @@ namespace SECmd.Conversion
     }
 
     /// <summary>
+    /// A single named scalar animated on a node: an emitter's birth rate, a
+    /// shader's alpha, whether something is visible.
+    /// </summary>
+    /// <remarks>
+    /// FBX has one way to express all of these — a custom property on the model,
+    /// driven by a curve — while a NIF needs four strings to say which controller
+    /// on which sub-object the track belongs to. Those strings are carried through
+    /// the FBX property's *name*, encoded by <see cref="ToPropertyName"/>, because
+    /// a property that cannot be traced back is a property that can only be
+    /// exported.
+    /// </remarks>
+    public sealed class AnimProperty
+    {
+        /// <summary>The separator between the parts of an encoded name.</summary>
+        /// <remarks>
+        /// Chosen because NIF names are identifiers and paths; none of them contain
+        /// a pipe, so nothing legitimate is ambiguous.
+        /// </remarks>
+        public const char Separator = '|';
+
+        /// <summary>The FBX property name, encoding the identity below.</summary>
+        public required string Name { get; init; }
+
+        public AnimCurve Curve { get; } = new();
+
+        /// <summary>Whether the source was a boolean track rather than a float one.</summary>
+        public bool IsBoolean { get; init; }
+
+        /// <summary>The NIF controller class, e.g. <c>NiPSysEmitterCtlr</c>.</summary>
+        public string ControllerType { get; init; } = string.Empty;
+
+        /// <summary>Which of several same-typed controllers on the target this is.</summary>
+        public string ControllerId { get; init; } = string.Empty;
+
+        /// <summary>Which value of that controller the track drives, e.g. <c>BirthRate</c>.</summary>
+        public string InterpolatorId { get; init; } = string.Empty;
+
+        /// <summary>The property class the controller is attached to, when it is one.</summary>
+        public string PropertyType { get; init; } = string.Empty;
+
+        /// <summary>The FBX name for a visibility track.</summary>
+        /// <remarks>
+        /// Kept as the plain FBX property rather than an encoded one, because
+        /// <c>Visibility</c> is standard: a DCC tool given this actually hides the
+        /// object, where an encoded name would only be a number nobody reads.
+        /// </remarks>
+        public const string VisibilityName = "Visibility";
+
+        /// <summary>The NIF controller that <see cref="VisibilityName"/> stands for.</summary>
+        public const string VisibilityController = "NiVisController";
+
+        /// <summary>Builds the FBX property name that carries this track's identity.</summary>
+        public string ToPropertyName() => ToPropertyName(
+            ControllerType, ControllerId, InterpolatorId, PropertyType);
+
+        /// <inheritdoc cref="ToPropertyName()"/>
+        public static string ToPropertyName(
+            string controllerType, string controllerId, string interpolatorId, string propertyType)
+        {
+            if (controllerType == VisibilityController
+                && controllerId.Length == 0 && interpolatorId.Length == 0)
+            {
+                return VisibilityName;
+            }
+
+            var parts = new List<string> { controllerType, controllerId, interpolatorId, propertyType };
+
+            // Trailing empties carry nothing, and dropping them keeps the common
+            // case -- a controller with no ids at all -- readable.
+            while (parts.Count > 1 && parts[^1].Length == 0)
+                parts.RemoveAt(parts.Count - 1);
+
+            return string.Join(Separator, parts);
+        }
+
+        /// <summary>Recovers the identity from an FBX property name.</summary>
+        public static (string ControllerType, string ControllerId, string InterpolatorId, string PropertyType)
+            FromPropertyName(string name)
+        {
+            if (name == VisibilityName)
+                return (VisibilityController, string.Empty, string.Empty, string.Empty);
+
+            string[] parts = name.Split(Separator);
+
+            string At(int i) => i < parts.Length ? parts[i] : string.Empty;
+
+            return (At(0), At(1), At(2), At(3));
+        }
+    }
+
+    /// <summary>
     /// One node's animation, as the nine curves FBX addresses separately.
     /// </summary>
     /// <remarks>
@@ -57,9 +148,16 @@ namespace SECmd.Conversion
 
         public AnimCurve[] Scale { get; } = [new(), new(), new()];
 
+        /// <summary>Named scalars animated alongside the transform.</summary>
+        public List<AnimProperty> Properties { get; } = [];
+
+        /// <summary>The nine transform curves.</summary>
         public IEnumerable<AnimCurve> Curves => Translation.Concat(Rotation).Concat(Scale);
 
-        public bool HasKeys => Curves.Any(c => c.HasKeys);
+        /// <summary>Everything keyed on this node, transform and properties alike.</summary>
+        public IEnumerable<AnimCurve> AllCurves => Curves.Concat(Properties.Select(p => p.Curve));
+
+        public bool HasKeys => AllCurves.Any(c => c.HasKeys);
     }
 
     /// <summary>
@@ -94,7 +192,7 @@ namespace SECmd.Conversion
             float start = float.MaxValue;
             float stop = float.MinValue;
 
-            foreach (AnimCurve curve in Tracks.SelectMany(t => t.Curves).Where(c => c.HasKeys))
+            foreach (AnimCurve curve in Tracks.SelectMany(t => t.AllCurves).Where(c => c.HasKeys))
             {
                 (float first, float last) = curve.Span;
                 start = MathF.Min(start, first);
