@@ -376,7 +376,9 @@ namespace SECmd.Nif
                     if (!TryReadByte(out byte length))
                         return false;
 
-                    return ReadStringOfLength(ref value, length);
+                    // The stored length counts a NUL terminator, so the text stops
+                    // at the first NUL rather than filling the field.
+                    return ReadStringOfLength(ref value, length, stopAtNul: true);
                 }
 
                 case NifValueType.String:
@@ -405,10 +407,12 @@ namespace SECmd.Nif
 
                 case NifValueType.Char8String:
                 {
+                    // A fixed eight-byte field, NUL-padded.
                     if (!TryFill(8))
                         return false;
 
-                    value.Set(StringEncoding.GetString(_buffer, 0, 8).TrimEnd('\0'));
+                    int length = _buffer.AsSpan(0, 8).IndexOf((byte)0);
+                    value.Set(StringEncoding.GetString(_buffer, 0, length < 0 ? 8 : length));
                     return true;
                 }
 
@@ -501,7 +505,15 @@ namespace SECmd.Nif
             return ReadStringOfLength(ref value, length);
         }
 
-        private bool ReadStringOfLength(ref NifValue value, int length)
+        /// <summary>
+        /// Reads <paramref name="length"/> bytes as text.
+        /// </summary>
+        /// <param name="stopAtNul">
+        /// True for the field types whose stored length includes a NUL terminator.
+        /// Length-prefixed strings deliberately do not stop, so that the prefix
+        /// stays authoritative and the bytes round-trip unchanged.
+        /// </param>
+        private bool ReadStringOfLength(ref NifValue value, int length, bool stopAtNul = false)
         {
             if (length == 0)
             {
@@ -513,7 +525,17 @@ namespace SECmd.Nif
             if (!TryReadExact(bytes))
                 return false;
 
-            value.Set(StringEncoding.GetString(bytes));
+            int count = length;
+
+            if (stopAtNul)
+            {
+                int nul = Array.IndexOf(bytes, (byte)0);
+
+                if (nul >= 0)
+                    count = nul;
+            }
+
+            value.Set(StringEncoding.GetString(bytes, 0, count));
             return true;
         }
 
