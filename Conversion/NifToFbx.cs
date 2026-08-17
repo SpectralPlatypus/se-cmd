@@ -55,11 +55,45 @@ namespace SECmd.Conversion
 
             // After the tree, because a track binds to a model by name and every
             // model has to exist before anything can be bound to it.
+            // Both need the whole tree: a constraint joins two bodies and a track
+            // binds to a model by name, so nothing can be bound until every node
+            // that could be its target exists.
+            if (_options.ExportCollision)
+                ConvertConstraints(scene);
+
             if (_options.ExportAnimation)
                 ConvertAnimation(scene);
 
             scene.Flush();
             return document;
+        }
+
+        /// <summary>The rigid bodies converted so far, and the nodes standing for them.</summary>
+        private readonly Dictionary<NifItem, (FbxObject Node, string Name)> _bodies = [];
+
+        /// <summary>
+        /// Emits the constraints between converted rigid bodies.
+        /// </summary>
+        /// <remarks>
+        /// A constraint is listed by the bodies it joins, and a chain by every body
+        /// along it, so the same block is reached more than once and is written the
+        /// first time only.
+        /// </remarks>
+        private void ConvertConstraints(FbxScene scene)
+        {
+            var written = new HashSet<NifItem>();
+
+            foreach (NifItem body in _bodies.Keys.ToList())
+            {
+                foreach (NifItem constraint in _model.GetRefArray(body, "Constraints"))
+                {
+                    if (!written.Add(constraint))
+                        continue;
+
+                    if (FbxConstraintWriter.AddConstraint(scene, _model, constraint, _bodies) is null)
+                        Warnings.Add($"{constraint.Name}: neither body was converted, the constraint is dropped");
+                }
+            }
         }
 
         /// <summary>Writes the model's sequences as FBX animation stacks.</summary>
@@ -212,6 +246,10 @@ namespace SECmd.Conversion
 
             FbxObject bodyNode = FbxMeshWriter.AddModel(scene, name + suffix, "Null", transform);
             scene.Connect(bodyNode, parent);
+
+            // Constraints join two bodies and are emitted once the walk has seen
+            // both, so the bodies are remembered as they are converted.
+            _bodies[body] = (bodyNode, name + suffix);
 
             NifItem? shape = _model.GetRef(body, "Shape");
 
