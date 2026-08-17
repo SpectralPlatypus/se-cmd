@@ -166,7 +166,7 @@ namespace SECmd.Conversion
                     t.Z * ShapeTessellator.BhkScaleFactor);
 
                 NifQuat rotation = _model.FindItem(body, "Rotation")?.Value.Get<NifQuat>() ?? NifQuat.Identity;
-                transform = new NifTransform(scaled, RotationFromQuaternion(rotation), 1f);
+                transform = new NifTransform(scaled, NifTransform.RotationFromQuaternion(rotation), 1f);
             }
 
             FbxObject bodyNode = FbxMeshWriter.AddModel(scene, name + suffix, "Null", transform);
@@ -333,7 +333,7 @@ namespace SECmd.Conversion
                     NifQuat r = _model.FindItem(item, "Rotation")?.Value.Get<NifQuat>() ?? NifQuat.Identity;
 
                     transforms.Add(new NifTransform(
-                        new NifVector3(t.X, t.Y, t.Z), RotationFromQuaternion(r), 1f));
+                        new NifVector3(t.X, t.Y, t.Z), NifTransform.RotationFromQuaternion(r), 1f));
                 }
             }
 
@@ -433,24 +433,6 @@ namespace SECmd.Conversion
             }
 
             return points;
-        }
-
-        private static NifMatrix33 RotationFromQuaternion(NifQuat q)
-        {
-            float x = q.X, y = q.Y, z = q.Z, w = q.W;
-
-            return new NifMatrix33
-            {
-                M11 = 1f - 2f * (y * y + z * z),
-                M12 = 2f * (x * y + z * w),
-                M13 = 2f * (x * z - y * w),
-                M21 = 2f * (x * y - z * w),
-                M22 = 1f - 2f * (x * x + z * z),
-                M23 = 2f * (y * z + x * w),
-                M31 = 2f * (x * z + y * w),
-                M32 = 2f * (y * z - x * w),
-                M33 = 1f - 2f * (x * x + y * y)
-            };
         }
 
         private void ConvertGeometry(FbxScene scene, NifItem shape, FbxObject? parent)

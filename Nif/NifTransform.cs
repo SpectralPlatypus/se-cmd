@@ -171,6 +171,29 @@ namespace SECmd.Nif
             return new NifVector3(x * ToDegrees, y * ToDegrees, z * ToDegrees);
         }
 
+        /// <summary>Builds a rotation matrix from a quaternion.</summary>
+        /// <remarks>
+        /// The transpose of the usual column-vector form, because NIF applies its
+        /// matrices to row vectors. Getting this backwards mirrors every rotation.
+        /// </remarks>
+        public static NifMatrix33 RotationFromQuaternion(NifQuat q)
+        {
+            float x = q.X, y = q.Y, z = q.Z, w = q.W;
+
+            return new NifMatrix33
+            {
+                M11 = 1f - 2f * (y * y + z * z),
+                M12 = 2f * (x * y + z * w),
+                M13 = 2f * (x * z - y * w),
+                M21 = 2f * (x * y - z * w),
+                M22 = 1f - 2f * (x * x + z * z),
+                M23 = 2f * (y * z + x * w),
+                M31 = 2f * (x * z + y * w),
+                M32 = 2f * (y * z - x * w),
+                M33 = 1f - 2f * (x * x + y * y)
+            };
+        }
+
         /// <summary>Builds a rotation matrix from Euler angles in degrees, XYZ order.</summary>
         public static NifMatrix33 RotationFromEulerDegrees(float x, float y, float z)
         {
