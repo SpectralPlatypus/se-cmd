@@ -26,18 +26,23 @@ namespace SECmd.Nif
         /// Whether a field is a link to another block.
         /// </summary>
         /// <remarks>
-        /// Block indices mean nothing once exported, so links are never carried as
-        /// values. What they pointed at is either expressed by the scene's own
-        /// structure or is not carried at all, and either way the caller decides.
+        /// Block indices mean nothing once exported, so a link is never carried as a
+        /// value. What it pointed at is the caller's problem: expressed by the scene's
+        /// own structure, carried by name, or not carried at all.
         /// </remarks>
         public static bool IsLink(NifItem item) =>
             item.Value.Type is NifValueType.Link or NifValueType.UpLink;
 
         /// <summary>Writes every live field under an item.</summary>
         /// <param name="skip">Fields to leave out, over and above the links.</param>
+        /// <param name="link">
+        /// Called for each link instead of dropping it, when the caller has somewhere
+        /// to put one. Given the name the field would have had and the link itself.
+        /// </param>
         public static void Write(
             NifModel model, NifItem parent, string prefix,
-            Action<string, string> sink, Func<NifItem, bool>? skip = null)
+            Action<string, string> sink, Func<NifItem, bool>? skip = null,
+            Action<string, NifItem>? link = null)
         {
             foreach (NifItem child in parent.Children)
             {
@@ -56,9 +61,11 @@ namespace SECmd.Nif
                         NifItem element = child.Children[i];
 
                         if (element.Children.Count > 0)
-                            Write(model, element, $"{name}_{i}_", sink, skip);
+                            Write(model, element, $"{name}_{i}_", sink, skip, link);
                         else if (!IsLink(element))
                             sink($"{name}_{i}", Format(element));
+                        else
+                            link?.Invoke($"{name}_{i}", element);
                     }
 
                     continue;
@@ -66,19 +73,23 @@ namespace SECmd.Nif
 
                 if (child.Children.Count > 0)
                 {
-                    Write(model, child, $"{name}_", sink, skip);
+                    Write(model, child, $"{name}_", sink, skip, link);
                     continue;
                 }
 
                 if (!IsLink(child))
                     sink(name, Format(child));
+                else
+                    link?.Invoke(name, child);
             }
         }
 
         /// <summary>Fills every live field under an item from stored text.</summary>
+        /// <param name="link">The read counterpart of <see cref="Write"/>'s.</param>
         public static void Read(
             NifModel model, NifItem parent, string prefix,
-            Func<string, string?> source, Func<NifItem, bool>? skip = null)
+            Func<string, string?> source, Func<NifItem, bool>? skip = null,
+            Action<string, NifItem>? link = null)
         {
             foreach (NifItem child in parent.Children)
             {
@@ -99,9 +110,11 @@ namespace SECmd.Nif
                         NifItem element = child.Children[i];
 
                         if (element.Children.Count > 0)
-                            Read(model, element, $"{name}_{i}_", source, skip);
+                            Read(model, element, $"{name}_{i}_", source, skip, link);
                         else if (!IsLink(element) && source($"{name}_{i}") is { } text)
                             Assign(element, text);
+                        else if (IsLink(element))
+                            link?.Invoke($"{name}_{i}", element);
                     }
 
                     continue;
@@ -109,11 +122,13 @@ namespace SECmd.Nif
 
                 if (child.Children.Count > 0)
                 {
-                    Read(model, child, $"{name}_", source, skip);
+                    Read(model, child, $"{name}_", source, skip, link);
                     continue;
                 }
 
-                if (!IsLink(child) && source(name) is { } value)
+                if (IsLink(child))
+                    link?.Invoke(name, child);
+                else if (source(name) is { } value)
                     Assign(child, value);
             }
         }

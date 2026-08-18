@@ -43,18 +43,42 @@ namespace SECmd.Fbx
         public const string ModifierPrefix = "npsm_";
 
         /// <summary>
+        /// Suffix marking a property that names what a link pointed at.
+        /// </summary>
+        /// <remarks>
+        /// A block index means nothing once exported, but the *name* of what it
+        /// pointed at survives anything: an emitter object and a gravity object are
+        /// named nodes, and a spawn modifier is a named modifier. Resolving by name is
+        /// also what this project already does for skin bones, animation targets and
+        /// constraint entities, so a particle system is not a special case.
+        /// </remarks>
+        public const string LinkSuffix = "_ref";
+
+        /// <summary>
         /// Fields the node already carries, or that mean nothing outside the file.
         /// </summary>
         /// <remarks>
-        /// The name and transform are the node's; the rest are links, which the
-        /// codec drops anyway, and the extra data and controller counts that go with
-        /// them. A count left behind without the array it sizes would make the
-        /// rebuilt block claim references it has not got.
+        /// The name and transform are the node's, and a count left behind without the
+        /// array it sizes would make the rebuilt block claim references it has not
+        /// got.
         /// </remarks>
         private static readonly HashSet<string> Skipped = new(StringComparer.Ordinal)
         {
             "Name", "Translation", "Rotation", "Scale",
             "Num Extra Data List", "Num Modifiers", "Num Properties"
+        };
+
+        /// <summary>
+        /// Links the rebuild wires up for itself, so naming them would be redundant.
+        /// </summary>
+        /// <remarks>
+        /// The system's own data and modifier list, and each modifier's pointer back
+        /// to the system it belongs to. All three follow from the structure being
+        /// rebuilt and cannot disagree with it.
+        /// </remarks>
+        private static readonly HashSet<string> StructuralLinks = new(StringComparer.Ordinal)
+        {
+            "Data", "Modifiers", "Target"
         };
 
         /// <summary>Whether a block is a particle system this carries.</summary>
@@ -96,7 +120,26 @@ namespace SECmd.Fbx
             NifFieldCodec.Write(
                 model, block, prefix,
                 (name, value) => node.Properties.SetUserString(name, value),
-                child => Skipped.Contains(child.Name));
+                child => Skipped.Contains(child.Name),
+                (name, item) => WriteLink(node, model, block, name, item));
+        }
+
+        /// <summary>Records what a link pointed at, by name.</summary>
+        private static void WriteLink(
+            FbxObject node, NifModel model, NifItem block, string name, NifItem item)
+        {
+            if (StructuralLinks.Contains(item.Name))
+                return;
+
+            // A null link and a link to something nameless are the same thing here:
+            // nothing to say, and a blank property would only look like a loss.
+            if (model.GetBlock(item) is not { } target)
+                return;
+
+            string targetName = model.GetName(target);
+
+            if (targetName.Length > 0)
+                node.Properties.SetUserString($"{name}{LinkSuffix}", targetName);
         }
     }
 }

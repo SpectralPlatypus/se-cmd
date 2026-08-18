@@ -11,10 +11,10 @@ namespace SECmd.Nif
     /// in either direction — a particle system exported through FBXWrangler comes
     /// back as a bare node with its emitter, its data and all of its modifiers gone.
     ///
-    /// What cannot be carried is the links *between* blocks: a gravity modifier
-    /// points at the node whose position it pulls towards, and a block index means
-    /// nothing once exported. Those are left null and reported rather than guessed
-    /// at from names, which would attach the wrong node as readily as the right one.
+    /// Links between blocks are carried by the name of what they pointed at, and
+    /// resolved in two passes: a link naming one of this system's own modifiers is
+    /// wired straight away, and one naming a node elsewhere in the scene has to wait
+    /// until the whole tree exists, exactly as skins and animation do.
     /// </remarks>
     public static class NifParticleWriter
     {
@@ -22,12 +22,20 @@ namespace SECmd.Nif
         public static bool HasParticleSystem(FbxObject node) =>
             node.Properties.GetString(FbxParticleWriter.TypeProperty).Length > 0;
 
+        /// <summary>A link waiting for the node it names to exist.</summary>
+        public readonly record struct PendingParticleLink(NifItem Link, string TargetName, string Context);
+
         /// <summary>
         /// Builds the system, its data block and its modifiers.
         /// </summary>
+        /// <param name="pending">
+        /// Collects links naming something outside this system, for the caller to
+        /// resolve once the whole tree is built.
+        /// </param>
         /// <returns>The system block, or null when the node carries none.</returns>
         public static NifItem? WriteParticleSystem(
-            this NifModel model, FbxObject node, string name, List<string> warnings)
+            this NifModel model, FbxObject node, string name,
+            List<string> warnings, List<PendingParticleLink> pending)
         {
             string type = node.Properties.GetString(FbxParticleWriter.TypeProperty);
 
@@ -41,24 +49,52 @@ namespace SECmd.Nif
             }
 
             var fields = Fields(node);
+            var links = new List<(NifItem Link, string TargetName)>();
 
             NifItem system = model.InsertBlock(type);
             model.SetString(system, "Name", name);
 
-            Read(model, system, fields, FbxParticleWriter.SystemPrefix);
+            Read(model, system, fields, FbxParticleWriter.SystemPrefix, links);
 
             string dataType = node.Properties.GetString(FbxParticleWriter.DataTypeProperty);
 
             if (dataType.Length > 0 && model.KnowsBlock(dataType))
             {
                 NifItem data = model.InsertBlock(dataType);
-                Read(model, data, fields, FbxParticleWriter.DataPrefix);
+                Read(model, data, fields, FbxParticleWriter.DataPrefix, links);
                 model.SetRef(system, "Data", data);
             }
 
-            WriteModifiers(model, node, system, fields, name, warnings);
+            var modifiers = WriteModifiers(model, node, system, fields, name, warnings, links);
+
+            ResolveLinks(model, links, modifiers, name, pending);
 
             return system;
+        }
+
+        /// <summary>
+        /// Wires up what can be wired now, and defers the rest.
+        /// </summary>
+        /// <remarks>
+        /// A link naming one of this system's own modifiers — an age-death modifier
+        /// naming its spawn modifier — is resolvable the moment the stack exists. One
+        /// naming a node is not: an emitter object may be a sibling the walk has not
+        /// reached, so it waits for the tree.
+        /// </remarks>
+        private static void ResolveLinks(
+            NifModel model,
+            List<(NifItem Link, string TargetName)> links,
+            IReadOnlyDictionary<string, NifItem> modifiers,
+            string name,
+            List<PendingParticleLink> pending)
+        {
+            foreach ((NifItem link, string target) in links)
+            {
+                if (modifiers.TryGetValue(target, out NifItem? modifier))
+                    link.Value.SetLink(model.IndexOf(modifier));
+                else
+                    pending.Add(new PendingParticleLink(link, target, name));
+            }
         }
 
         /// <summary>
@@ -69,14 +105,16 @@ namespace SECmd.Nif
         /// one link here worth restoring: without it a modifier is in the array and
         /// attached to nothing.
         /// </remarks>
-        private static void WriteModifiers(
+        private static Dictionary<string, NifItem> WriteModifiers(
             NifModel model, FbxObject node, NifItem system,
-            IReadOnlyDictionary<string, string> fields, string name, List<string> warnings)
+            IReadOnlyDictionary<string, string> fields, string name, List<string> warnings,
+            List<(NifItem Link, string TargetName)> links)
         {
+            var byName = new Dictionary<string, NifItem>(StringComparer.Ordinal);
             int count = Count(node, FbxParticleWriter.ModifierCountProperty);
 
             if (count <= 0)
-                return;
+                return byName;
 
             var built = new List<NifItem>();
 
@@ -93,22 +131,31 @@ namespace SECmd.Nif
 
                 NifItem modifier = model.InsertBlock(type);
 
-                model.SetString(modifier, "Name", node.Properties.GetString($"{prefix}name"));
-                Read(model, modifier, fields, prefix);
+                string modifierName = node.Properties.GetString($"{prefix}name");
+
+                model.SetString(modifier, "Name", modifierName);
+                Read(model, modifier, fields, prefix, links);
 
                 model.SetRef(modifier, "Target", system);
                 built.Add(modifier);
+
+                // How a controller finds it, and how another modifier names it.
+                if (modifierName.Length > 0)
+                    byName.TryAdd(modifierName, modifier);
             }
 
-            if (model.SetArraySize(system, "Num Modifiers", "Modifiers", built.Count) is not { } array)
-                return;
+            if (model.SetArraySize(system, "Num Modifiers", "Modifiers", built.Count) is { } array)
+            {
+                for (int i = 0; i < built.Count && i < array.Children.Count; i++)
+                    array.Children[i].Value.SetLink(model.IndexOf(built[i]));
+            }
 
-            for (int i = 0; i < built.Count && i < array.Children.Count; i++)
-                array.Children[i].Value.SetLink(model.IndexOf(built[i]));
+            return byName;
         }
 
         private static void Read(
-            NifModel model, NifItem block, IReadOnlyDictionary<string, string> fields, string prefix)
+            NifModel model, NifItem block, IReadOnlyDictionary<string, string> fields, string prefix,
+            List<(NifItem Link, string TargetName)> links)
         {
             NifFieldCodec.Read(
                 model, block, prefix,
@@ -116,7 +163,13 @@ namespace SECmd.Nif
 
                 // The name is the node's, and the counts are rewritten from what was
                 // actually rebuilt rather than from what the source had.
-                child => child.Name is "Name" or "Num Extra Data List" or "Num Modifiers" or "Num Properties");
+                child => child.Name is "Name" or "Num Extra Data List" or "Num Modifiers" or "Num Properties",
+
+                (name, item) =>
+                {
+                    if (fields.GetValueOrDefault($"{name}{FbxParticleWriter.LinkSuffix}") is { Length: > 0 } target)
+                        links.Add((item, target));
+                });
         }
 
         /// <summary>Every user property on the node, by name.</summary>

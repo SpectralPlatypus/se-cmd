@@ -114,6 +114,10 @@ namespace SECmd.Conversion
             // they can only be resolved once the whole tree exists.
             BuildPendingSkins(root);
 
+            // A particle system's emitter and gravity objects are nodes elsewhere in
+            // the scene, which the walk may not have reached when the system was built.
+            ResolveParticleLinks();
+
             // Constraints join two bodies, so they wait until every body exists.
             if (_options.ImportConstraints)
                 _model.WriteConstraints(_scene.ReadConstraints(), _bodiesByName, Warnings);
@@ -178,7 +182,8 @@ namespace SECmd.Conversion
             // NiNode: it is the same node, and emitting both would leave the system
             // parented under a copy of itself.
             NifItem node = NifParticleWriter.HasParticleSystem(model)
-                ? _model.WriteParticleSystem(model, name, Warnings) ?? _model.InsertBlock("NiNode")
+                ? _model.WriteParticleSystem(model, name, Warnings, _pendingParticleLinks)
+                  ?? _model.InsertBlock("NiNode")
                 : _model.InsertBlock("NiNode");
 
             _model.SetString(node, "Name", name);
@@ -210,6 +215,32 @@ namespace SECmd.Conversion
 
         /// <summary>The rigid bodies built so far, by the node name they came from.</summary>
         private readonly Dictionary<string, NifItem> _bodiesByName = new(StringComparer.Ordinal);
+
+        /// <summary>Particle links naming a node, waiting for that node to exist.</summary>
+        private readonly List<NifParticleWriter.PendingParticleLink> _pendingParticleLinks = [];
+
+        /// <summary>
+        /// Points a particle system's links at the nodes they name.
+        /// </summary>
+        /// <remarks>
+        /// An emitter that has lost its emitter object emits from the origin and a
+        /// gravity modifier that has lost its gravity object pulls towards it, and
+        /// neither shows up as anything but the effect being wrong.
+        /// </remarks>
+        private void ResolveParticleLinks()
+        {
+            foreach (NifParticleWriter.PendingParticleLink pending in _pendingParticleLinks)
+            {
+                if (_nodesByName.TryGetValue(pending.TargetName, out NifItem? target))
+                    pending.Link.Value.SetLink(_model.IndexOf(target));
+                else
+                    Warnings.Add(
+                        $"{pending.Context}: no node named \"{pending.TargetName}\", "
+                        + "the particle system's reference to it is dropped");
+            }
+
+            _pendingParticleLinks.Clear();
+        }
 
         /// <summary>
         /// Builds the collision object for a node from any bodies found beneath it.
