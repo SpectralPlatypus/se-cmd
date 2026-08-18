@@ -186,6 +186,12 @@ namespace SECmd.Conversion
             _built[block] = node;
             Remember(block, node);
 
+            // A particle system has no geometry to export -- its vertices are a
+            // runtime buffer the file only sizes -- so it stays an empty node with
+            // the system carried alongside it.
+            if (FbxParticleWriter.IsParticleSystem(_model, block))
+                FbxParticleWriter.AddParticleSystem(node, _model, block);
+
             if (parent is null)
                 scene.ConnectToRoot(node);
             else

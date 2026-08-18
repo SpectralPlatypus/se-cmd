@@ -1377,5 +1377,13 @@ namespace SECmd.Nif
 
         /// <summary>True when a block is, or descends from, the named type.</summary>
         public bool BlockInherits(NifItem block, string ancestor) => _db.Inherits(block.Name, ancestor);
+
+        /// <summary>Whether nif.xml declares a block of this name.</summary>
+        /// <remarks>
+        /// For rebuilding a block whose type came from outside the file — an FBX
+        /// property, say. Inserting an unknown one throws, and a name that arrived as
+        /// text is not something to take on trust.
+        /// </remarks>
+        public bool KnowsBlock(string name) => _db.IsBlock(name);
     }
 }

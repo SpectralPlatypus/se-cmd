@@ -174,7 +174,13 @@ namespace SECmd.Conversion
             if (FbxConstraintReader.IsAttachmentPoint(model))
                 return;
 
-            NifItem node = _model.InsertBlock("NiNode");
+            // A node carrying a particle system becomes the system rather than a
+            // NiNode: it is the same node, and emitting both would leave the system
+            // parented under a copy of itself.
+            NifItem node = NifParticleWriter.HasParticleSystem(model)
+                ? _model.WriteParticleSystem(model, name, Warnings) ?? _model.InsertBlock("NiNode")
+                : _model.InsertBlock("NiNode");
+
             _model.SetString(node, "Name", name);
             _model.SetTransform(node, transform);
             _nodesByName[name] = node;
