@@ -17,20 +17,25 @@ namespace SECmd.Tests
     /// across every block type Bethesda actually used. Loading each and saving it
     /// back has to reproduce the file byte for byte.
     ///
+    /// Twice over: once re-saving the tree the reader built, and once rebuilding the
+    /// whole model through the authoring API first (see <see cref="RebuildTests"/>).
+    /// The second is the harder of the two and the one the FBX importer depends on.
+    ///
     /// This is a different kind of check from the committed fixtures. Twenty-four
     /// files chosen for the features they demonstrate cannot tell you what the
     /// hundredth-most-common block looks like in the wild; twenty-two thousand
-    /// arbitrary ones can. It found two bugs the fixtures never would have: ragged
-    /// two-dimensional arrays sizing to nothing, and half-precision NaNs losing
-    /// their payload.
+    /// arbitrary ones can. It found four bugs the fixtures never would have: ragged
+    /// two-dimensional arrays sizing to nothing, half-precision NaNs losing their
+    /// payload, block-type tables being reordered, and string tables being interned
+    /// when they had to be copied.
     ///
     /// **Nothing is copied out of the archives.** They are read in place, from a
     /// folder named by <c>SECMD_SKYRIM_DATA</c>.
     ///
     /// **It does not run unless asked.** Without that variable the test returns, so
     /// an ordinary <c>dotnet test</c> is unaffected and a checkout without Skyrim
-    /// passes. The sweep takes about five minutes, which is far too long to sit in
-    /// the middle of everybody's build:
+    /// passes. The two sweeps take about five and ten minutes, which is far too long
+    /// to sit in the middle of everybody's build:
     ///
     /// <code>
     /// SECMD_SKYRIM_DATA="/path/to/Skyrim Special Edition/Data" dotnet test \
@@ -38,7 +43,7 @@ namespace SECmd.Tests
     /// </code>
     ///
     /// <c>SECMD_BSA_SAMPLE=N</c> checks a subset instead of all of them, for when
-    /// five minutes is still too long.
+    /// fifteen minutes is still too long.
     /// </remarks>
     [Trait("Category", "Corpus")]
     public class BsaCorpusTests
@@ -74,6 +79,60 @@ namespace SECmd.Tests
 
         [Fact]
         public void EveryVanillaMeshSavesBackByteForByte()
+        {
+            Sweep((original, db) =>
+            {
+                using var input = new MemoryStream(original);
+                NifModel model = NifModel.Load(input, db);
+
+                using var output = new MemoryStream();
+                model.Save(output);
+
+                return Compare(original, output);
+            });
+        }
+
+        [Fact]
+        public void EveryVanillaMeshRebuildsByteForByte()
+        {
+            // The same files through the authoring path instead: every block
+            // inserted by type and filled field by field, every array sized from its
+            // own count, the header and string table recomputed. That is what the FBX
+            // importer does, and the only thing that says it does it correctly at
+            // scale.
+            Sweep((original, db) =>
+            {
+                using var input = new MemoryStream(original);
+                NifModel model = NifModel.Load(input, db);
+
+                using var output = new MemoryStream();
+                RebuildTests.Rebuild(model).Save(output);
+
+                return Compare(original, output);
+            });
+        }
+
+        /// <summary>The reason the two differ, or null when they do not.</summary>
+        private static string? Compare(byte[] original, MemoryStream saved)
+        {
+            byte[] actual = saved.ToArray();
+
+            if (actual.AsSpan().SequenceEqual(original))
+                return null;
+
+            int at = 0;
+
+            while (at < actual.Length && at < original.Length && actual[at] == original[at])
+                at++;
+
+            return $"differs at 0x{at:X} (length {original.Length} became {actual.Length})";
+        }
+
+        /// <summary>
+        /// Runs a check over every mesh in the archives, or none if none were asked
+        /// for.
+        /// </summary>
+        private static void Sweep(Func<byte[], NifXmlDatabase, string?> check)
         {
             if (DataFolder() is not { } data)
                 return;
@@ -112,24 +171,8 @@ namespace SECmd.Tests
 
                     try
                     {
-                        using var input = new MemoryStream(original);
-                        NifModel model = NifModel.Load(input, db);
-
-                        using var output = new MemoryStream();
-                        model.Save(output);
-
-                        byte[] actual = output.ToArray();
-
-                        if (actual.AsSpan().SequenceEqual(original))
-                            return;
-
-                        int at = 0;
-
-                        while (at < actual.Length && at < original.Length && actual[at] == original[at])
-                            at++;
-
-                        failures.Add((file.Path,
-                            $"differs at 0x{at:X} (length {original.Length} became {actual.Length})"));
+                        if (check(original, db) is { } reason)
+                            failures.Add((file.Path, reason));
                     }
                     catch (Exception e)
                     {
