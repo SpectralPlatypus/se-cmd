@@ -143,7 +143,9 @@ namespace SECmd.Tests
             // both would write every field twice, once bare and once under the
             // union's path.
             Assert.Equal("0.062033348", Property(point, "hkc_length"));
-            Assert.Equal("0.00463609 -0.00057309354 -0.009331107", Property(point, "hkc_pivot_b"));
+            // Four components: a Havok pivot's W is part of it, and dropping it
+            // meant it could only ever come back as zero.
+            Assert.Equal("0.00463609 -0.00057309354 -0.009331107 0", Property(point, "hkc_pivot_b"));
 
             Assert.DoesNotContain(point.Properties.All,
                 p => p.Name.Contains("constraint_data", StringComparison.Ordinal));

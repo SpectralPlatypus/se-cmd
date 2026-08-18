@@ -160,64 +160,10 @@ namespace SECmd.Nif
             NifModel model, NifItem parent, IReadOnlyDictionary<string, string> fields,
             string prefix, NifItem? skip = null)
         {
-            foreach (NifItem child in parent.Children)
-            {
-                if (child == skip || child.IsAbstract || !model.EvalCondition(child))
-                    continue;
-
-                if (NifConstraintAccess.IsEntityField(child.Name))
-                    continue;
-
-                string name = NifConstraintAccess.FieldKey(prefix, child.Name);
-
-                if (child.IsArray)
-                {
-                    // The count that sizes this array is a plain field and was set a
-                    // moment ago, in declaration order, so the array can be sized now.
-                    child.InvalidateConditionsRecursive();
-                    model.UpdateArraySize(child);
-
-                    for (int i = 0; i < child.Children.Count; i++)
-                        ReadFields(model, child.Children[i], fields, $"{name}_{i}_");
-
-                    continue;
-                }
-
-                if (child.Children.Count > 0)
-                {
-                    ReadFields(model, child, fields, $"{name}_");
-                    continue;
-                }
-
-                if (fields.TryGetValue(name, out string? text))
-                    Assign(child, text);
-            }
-        }
-
-        /// <summary>Parses one field's stored text back into its value.</summary>
-        private static void Assign(NifItem item, string text)
-        {
-            switch (item.Value.Type)
-            {
-                case NifValueType.Vector4:
-                    NifVector3 v4 = ParseVector(text);
-                    item.Value.Set(new NifVector4(v4.X, v4.Y, v4.Z, 0f));
-                    break;
-
-                case NifValueType.Vector3:
-                    item.Value.Set(ParseVector(text));
-                    break;
-
-                case NifValueType.Float:
-                    item.Value.SetFloat(ParseFloat(text));
-                    break;
-
-                default:
-                    if (uint.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint count))
-                        item.Value.SetCount(count);
-
-                    break;
-            }
+            NifFieldCodec.Read(
+                model, parent, prefix,
+                name => fields.GetValueOrDefault(name),
+                child => child == skip || NifConstraintAccess.IsEntityField(child.Name));
         }
 
         /// <summary>
@@ -309,14 +255,5 @@ namespace SECmd.Nif
 
         private static float ParseFloat(string text) =>
             float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out float value) ? value : 0f;
-
-        private static NifVector3 ParseVector(string text)
-        {
-            string[] parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-            return parts.Length < 3
-                ? new NifVector3()
-                : new NifVector3(ParseFloat(parts[0]), ParseFloat(parts[1]), ParseFloat(parts[2]));
-        }
     }
 }

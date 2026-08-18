@@ -203,54 +203,11 @@ namespace SECmd.Fbx
         private static void WriteFields(
             NifModel model, NifItem parent, FbxObject node, string prefix, NifItem? skip = null)
         {
-            foreach (NifItem child in parent.Children)
-            {
-                if (child == skip || child.IsAbstract || !model.EvalCondition(child))
-                    continue;
-
-                // The entity links are the joint's two ends, already expressed by
-                // where the node sits in the hierarchy.
-                if (NifConstraintAccess.IsEntityField(child.Name))
-                    continue;
-
-                string name = NifConstraintAccess.FieldKey(prefix, child.Name);
-
-                if (child.IsArray)
-                {
-                    // A chain's pivots are an array, and they are the whole of what
-                    // the chain says: dropping them leaves a joint with a length and
-                    // no idea where any of its links are.
-                    for (int i = 0; i < child.Children.Count; i++)
-                        WriteFields(model, child.Children[i], node, $"{name}_{i}_");
-
-                    continue;
-                }
-
-                if (child.Children.Count > 0)
-                {
-                    WriteFields(model, child, node, $"{name}_");
-                    continue;
-                }
-
-                node.Properties.SetUserString($"{FieldPrefix}{name}", Format(child));
-            }
+            NifFieldCodec.Write(
+                model, parent, prefix,
+                (name, value) => node.Properties.SetUserString($"{FieldPrefix}{name}", value),
+                child => child == skip || NifConstraintAccess.IsEntityField(child.Name));
         }
-
-        /// <summary>Formats one field's value for storage.</summary>
-        private static string Format(NifItem item) => item.Value.Type switch
-        {
-            NifValueType.Vector4 => Format(item.Value.Get<NifVector4>()),
-            NifValueType.Vector3 => Format(item.Value.Get<NifVector3>()),
-            NifValueType.Float => item.Value.ToFloat().ToString("R", System.Globalization.CultureInfo.InvariantCulture),
-            _ => item.Value.ToUInt().ToString(System.Globalization.CultureInfo.InvariantCulture)
-        };
-
-        private static string Format(NifVector4 v) => Format(new NifVector3(v.X, v.Y, v.Z));
-
-        private static string Format(NifVector3 v) => string.Join(' ',
-            v.X.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
-            v.Y.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
-            v.Z.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
 
         private static NifVector3 Vector(NifModel model, NifItem parent, string field)
         {
