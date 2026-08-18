@@ -100,8 +100,9 @@ namespace SECmd.Fbx
                 return;
 
             string declared = model.Properties.Find(name)?.Type ?? string.Empty;
+            bool colour = declared is "ColorRGB" or "Color";
 
-            var property = new AnimProperty
+            var property = new AnimProperty(colour ? 3 : 1)
             {
                 Name = name,
                 IsBoolean = declared is "bool" or "Visibility",
@@ -111,16 +112,20 @@ namespace SECmd.Fbx
                 PropertyType = propertyType
             };
 
+            string[] channels = colour ? ["d|X", "d|Y", "d|Z"] : [$"d|{name}"];
+
             foreach (FbxConnection c in scene.Connections)
             {
                 if (c.Kind != FbxConnectionKind.ObjectProperty || c.DestinationId != node.Id)
                     continue;
 
-                if (c.PropertyName == $"d|{name}" && scene[c.SourceId] is { Class: "AnimationCurve" } curve)
-                    ReadCurve(curve, property.Curve);
+                int axis = Array.IndexOf(channels, c.PropertyName);
+
+                if (axis >= 0 && scene[c.SourceId] is { Class: "AnimationCurve" } curve)
+                    ReadCurve(curve, property.Curves[axis]);
             }
 
-            if (property.Curve.HasKeys)
+            if (property.Curves.Any(c => c.HasKeys))
                 track.Properties.Add(property);
         }
 

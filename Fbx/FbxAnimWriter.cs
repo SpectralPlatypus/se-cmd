@@ -112,32 +112,55 @@ namespace SECmd.Fbx
         private static void AddPropertyChannel(
             FbxScene scene, FbxObject layer, FbxObject model, AnimProperty property)
         {
-            if (!property.Curve.HasKeys)
+            if (!property.Curves.Any(c => c.HasKeys))
                 return;
 
             string name = property.Name;
-            double first = property.Curve.Keys[0].Value;
 
-            if (name == AnimProperty.VisibilityName)
+            double First(int i) =>
+                property.Curves[i].HasKeys ? property.Curves[i].Keys[0].Value : 0d;
+
+            if (property.IsColor)
+            {
+                // A colour is three channels of one property, addressed by axis just
+                // as a translation is -- not three properties that happen to be
+                // named alike.
+                model.Properties.Set(name, "ColorRGB", "Color", "A+U", First(0), First(1), First(2));
+            }
+            else if (name == AnimProperty.VisibilityName)
             {
                 // Standard rather than user-defined, so a DCC tool given this
                 // actually hides the object.
-                model.Properties.Set(name, "Visibility", string.Empty, "A", first);
+                model.Properties.Set(name, "Visibility", string.Empty, "A", First(0));
             }
             else
             {
                 model.Properties.Set(
-                    name, property.IsBoolean ? "bool" : "Number", string.Empty, "A+U", first);
+                    name, property.IsBoolean ? "bool" : "Number", string.Empty, "A+U", First(0));
             }
 
             FbxObject node = scene.AddObject("AnimationCurveNode", name, string.Empty);
-            node.Properties.Set($"d|{name}", "Number", string.Empty, "A", first);
+
+            // Scalar properties are addressed by their own name and vector ones by
+            // axis, which is the only thing that says how many curves to expect.
+            string[] channels = property.IsColor
+                ? ["d|X", "d|Y", "d|Z"]
+                : [$"d|{name}"];
+
+            for (int i = 0; i < channels.Length; i++)
+                node.Properties.Set(channels[i], "Number", string.Empty, "A", First(i));
 
             scene.Connect(node, layer);
             scene.ConnectToProperty(node, model, name);
 
-            FbxObject curve = AddCurve(scene, property.Curve);
-            scene.ConnectToProperty(curve, node, $"d|{name}");
+            for (int i = 0; i < channels.Length; i++)
+            {
+                if (!property.Curves[i].HasKeys)
+                    continue;
+
+                FbxObject curve = AddCurve(scene, property.Curves[i]);
+                scene.ConnectToProperty(curve, node, channels[i]);
+            }
         }
 
         /// <summary>
