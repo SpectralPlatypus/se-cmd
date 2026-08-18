@@ -114,7 +114,7 @@ namespace SECmd.Tests
             NifModel model = Load("TestNifFile_Furniture_Col_SE.nif");
 
             NifItem constraint = model.Blocks.First(b => b.Name == "bhkBreakableConstraint");
-            NifItem descriptor = FbxConstraintWriter.DescriptorOf(model, constraint)!;
+            NifItem descriptor = model.ConstraintDescriptor(constraint);
 
             NifVector4 pivot = model.FindItem(descriptor, "Pivot B")!.Value.Get<NifVector4>();
 
