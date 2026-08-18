@@ -459,20 +459,27 @@ namespace SECmd.Conversion
                 // The suffix decides the primitive. Guessing from the geometry would
                 // silently swap a sphere for a box: their tessellations are not
                 // reliably distinguishable.
+                NifItem? built = null;
+
                 if (name.EndsWith("_box", StringComparison.Ordinal))
-                    return BuildBox(points);
+                    built = BuildBox(points);
+                else if (name.EndsWith("_sphere", StringComparison.Ordinal))
+                    built = BuildSphere(points);
+                else if (name.EndsWith("_capsule", StringComparison.Ordinal))
+                    built = BuildCapsule(points);
+                else if (name.EndsWith("_convex", StringComparison.Ordinal))
+                    built = BuildConvex(points);
+                else if (name.EndsWith("_mesh", StringComparison.Ordinal))
+                    built = BuildCompressedMesh(child, name);
 
-                if (name.EndsWith("_sphere", StringComparison.Ordinal))
-                    return BuildSphere(points);
+                if (built is null)
+                    continue;
 
-                if (name.EndsWith("_capsule", StringComparison.Ordinal))
-                    return BuildCapsule(points);
+                // Size comes back from the geometry; the material cannot, because
+                // nothing in the triangles says wood rather than stone.
+                ReadCollisionMaterial(built, child, name);
 
-                if (name.EndsWith("_convex", StringComparison.Ordinal))
-                    return BuildConvex(points);
-
-                if (name.EndsWith("_mesh", StringComparison.Ordinal))
-                    return BuildCompressedMesh(child, name);
+                return built;
             }
 
             return null;
@@ -509,6 +516,35 @@ namespace SECmd.Conversion
             }
 
             return points;
+        }
+
+        /// <summary>
+        /// Restores the Havok material from the FBX material on the collision mesh.
+        /// </summary>
+        /// <remarks>
+        /// The export names the material after the enum, as ck-cmd does, so a shape
+        /// that came from a NIF arrives with its material spelled out and a shape
+        /// authored in a DCC tool arrives with whatever the artist named it. An
+        /// unrecognised name is reported rather than silently left as stone: the
+        /// material decides footstep sound and impact response, and a wrong one is not
+        /// visible in the mesh.
+        /// </remarks>
+        private void ReadCollisionMaterial(NifItem shape, FbxObject holder, string name)
+        {
+            FbxObject? material = _scene.ChildrenOf(holder.Id)
+                .FirstOrDefault(o => o.Class == "Material");
+
+            if (material is null)
+                return;
+
+            string spelled = NameEncoding.Unsanitize(material.Name);
+
+            if (spelled.Length == 0 || FbxCollisionMaterial.Apply(_model, shape, spelled))
+                return;
+
+            Warnings.Add(
+                $"{name}: \"{spelled}\" is not a Skyrim Havok material, "
+                + "the shape keeps the default");
         }
 
         private NifItem BuildBox(IReadOnlyList<NifVector3> points)

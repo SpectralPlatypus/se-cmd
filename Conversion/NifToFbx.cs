@@ -265,6 +265,7 @@ namespace SECmd.Conversion
                 return;
             }
 
+            RememberOwner(shape, body);
             ConvertShape(scene, shape, bodyNode, name + suffix);
         }
 
@@ -326,7 +327,69 @@ namespace SECmd.Conversion
 
             FbxObject geometry = FbxMeshWriter.AddGeometry(scene, shapeName + "_geometry", mesh);
             scene.Connect(geometry, holder);
+
+            AddCollisionMaterial(scene, shape, holder, geometry);
         }
+
+        /// <summary>
+        /// Attaches the shape's Havok material to its mesh, as ck-cmd does.
+        /// </summary>
+        /// <remarks>
+        /// Nothing in the tessellated triangles records whether the shape is wood or
+        /// stone, and the engine reads that for footstep sound and impact response. It
+        /// travels as an FBX material named after the enum, which a DCC tool can show
+        /// and edit. Materials are shared between shapes that agree, so a file with one
+        /// material comes back with one.
+        /// </remarks>
+        private void AddCollisionMaterial(
+            FbxScene scene, NifItem shape, FbxObject holder, FbxObject geometry)
+        {
+            string material = FbxCollisionMaterial.NameOf(_model, shape);
+
+            if (material.Length == 0)
+                return;
+
+            string layer = FbxCollisionMaterial.LayerOf(_model, _shapeOwners.GetValueOrDefault(shape));
+            string key = $"{material}/{layer}";
+
+            if (!_collisionMaterials.TryGetValue(key, out FbxObject? fbxMaterial))
+            {
+                fbxMaterial = scene.AddObject("Material", material, string.Empty);
+                fbxMaterial.Node.Nodes.Add(new FbxNode("Version", 102));
+                fbxMaterial.Node.Nodes.Add(new FbxNode("ShadingModel", "Phong"));
+                fbxMaterial.Node.Nodes.Add(new FbxNode("MultiLayer", 0));
+
+                fbxMaterial.Properties.Set(
+                    FbxCollisionMaterial.LayerProperty, "KString", "", FbxProperties.UserFlags, layer);
+
+                _collisionMaterials[key] = fbxMaterial;
+            }
+
+            scene.Connect(fbxMaterial, holder);
+            FbxMeshWriter.AddSingleMaterialElement(geometry);
+        }
+
+        /// <summary>
+        /// Records which body a shape belongs to, following the tree down.
+        /// </summary>
+        /// <remarks>
+        /// The collision layer lives on the body's filter, not on the shape, so a leaf
+        /// several containers below still has to find the body above it.
+        /// </remarks>
+        private void RememberOwner(NifItem shape, NifItem body, int depth = 0)
+        {
+            if (depth > 16 || !_shapeOwners.TryAdd(shape, body))
+                return;
+
+            foreach (NifItem child in ChildShapesOf(shape))
+                RememberOwner(child, body, depth + 1);
+        }
+
+        /// <summary>Collision materials emitted so far, keyed by material and layer.</summary>
+        private readonly Dictionary<string, FbxObject> _collisionMaterials = new(StringComparer.Ordinal);
+
+        /// <summary>The body each shape hangs from, for the layer its filter names.</summary>
+        private readonly Dictionary<NifItem, NifItem> _shapeOwners = [];
 
         private IEnumerable<NifItem> ChildShapesOf(NifItem shape)
         {
