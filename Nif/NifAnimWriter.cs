@@ -207,7 +207,7 @@ namespace SECmd.Nif
                 if (track.Curves.Any(c => c.HasKeys))
                     entries.Add((track, node, null));
 
-                foreach (AnimProperty property in track.Properties.Where(p => p.Curve.HasKeys))
+                foreach (AnimProperty property in track.Properties.Where(p => p.Curves.Any(c => c.HasKeys)))
                     entries.Add((track, node, property));
             }
 
@@ -232,7 +232,7 @@ namespace SECmd.Nif
                 }
 
                 model.SetRef(entry, "Interpolator",
-                    WriteScalarInterpolator(model, property, sequence.Start));
+                    WriteValueInterpolator(model, property, sequence.Start));
 
                 // The four strings that say which controller on which sub-object
                 // this drives. Without them the keys exist but belong to nothing.
@@ -245,36 +245,62 @@ namespace SECmd.Nif
             return block;
         }
 
-        /// <summary>Writes a named scalar track as a float or boolean interpolator.</summary>
+        /// <summary>Writes a named track as a float, boolean or point interpolator.</summary>
         /// <remarks>
-        /// The two are the same shape — an interpolator pointing at a data block
-        /// holding one key group — and differ only in whether the values are floats
-        /// or bytes. Writing a boolean track as floats would leave the engine reading
-        /// four bytes per key where it expects one.
+        /// All three are the same shape — an interpolator pointing at a data block
+        /// holding one key group — and differ only in what a key holds. A boolean
+        /// track written as floats would leave the engine reading four bytes per key
+        /// where it expects one, and every key after the first would be wrong.
+        ///
+        /// A colour's three curves are merged back onto shared times the way a
+        /// translation's are, since a NIF key holds the whole point.
         /// </remarks>
-        private static NifItem WriteScalarInterpolator(NifModel model, AnimProperty property, float offset)
+        private static NifItem WriteValueInterpolator(NifModel model, AnimProperty property, float offset)
         {
-            NifItem data = model.InsertBlock(property.IsBoolean ? "NiBoolData" : "NiFloatData");
-
-            NifItem keys = SizeGroup(model, data, "Data", property.Curve.Keys.Count,
-                KeyTypeOf([property.Curve]));
-
-            for (int i = 0; i < property.Curve.Keys.Count && i < keys.Children.Count; i++)
+            string dataType = property switch
             {
-                AnimKey key = property.Curve.Keys[i];
+                { IsColor: true } => "NiPosData",
+                { IsBoolean: true } => "NiBoolData",
+                _ => "NiFloatData"
+            };
 
-                model.FindItem(keys.Children[i], "Time")?.Value.SetFloat(key.Time - offset);
+            NifItem data = model.InsertBlock(dataType);
+
+            var times = property.IsColor
+                ? MergedTimes(property.Curves)
+                : property.Curve.Keys.Select(k => k.Time).ToList();
+
+            NifItem keys = SizeGroup(model, data, "Data", times.Count, KeyTypeOf(property.Curves));
+
+            for (int i = 0; i < times.Count && i < keys.Children.Count; i++)
+            {
+                model.FindItem(keys.Children[i], "Time")?.Value.SetFloat(times[i] - offset);
 
                 NifItem? value = model.FindItem(keys.Children[i], "Value");
 
-                if (property.IsBoolean)
-                    value?.Value.SetCount(key.Value != 0f ? 1u : 0u);
+                if (property.IsColor)
+                {
+                    value?.Value.Set(new NifVector3(
+                        Sample(property.Curves[0], times[i]),
+                        Sample(property.Curves[1], times[i]),
+                        Sample(property.Curves[2], times[i])));
+                }
+                else if (property.IsBoolean)
+                {
+                    value?.Value.SetCount(property.Curve.Keys[i].Value != 0f ? 1u : 0u);
+                }
                 else
-                    value?.Value.SetFloat(key.Value);
+                {
+                    value?.Value.SetFloat(property.Curve.Keys[i].Value);
+                }
             }
 
-            NifItem interpolator = model.InsertBlock(
-                property.IsBoolean ? "NiBoolInterpolator" : "NiFloatInterpolator");
+            NifItem interpolator = model.InsertBlock(property switch
+            {
+                { IsColor: true } => "NiPoint3Interpolator",
+                { IsBoolean: true } => "NiBoolInterpolator",
+                _ => "NiFloatInterpolator"
+            });
 
             model.SetRef(interpolator, "Data", data);
             return interpolator;
@@ -476,7 +502,7 @@ namespace SECmd.Nif
         }
 
         /// <summary>Every time any axis of a channel is keyed at, in order.</summary>
-        private static List<float> MergedTimes(AnimCurve[] curves)
+        private static List<float> MergedTimes(IReadOnlyList<AnimCurve> curves)
         {
             var times = new SortedSet<float>();
 
