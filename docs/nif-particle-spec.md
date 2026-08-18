@@ -1,9 +1,9 @@
-# Particle systems: what a NIF stores, and what FBX can hold
+# Particle systems: what a NIF stores, and what a scene format can hold
 
 Extracted from `nif.xml` 0.9.1.0 (vendored at `External/nifxml/nif.xml`) and from the
-one particle system in the test corpus, `TestNifFile_Animated_LE.nif`. The FBX side is
-an assessment of the format's object model against that, and of the choice se-cmd has
-made.
+one particle system in the test corpus, `TestNifFile_Animated_LE.nif`. §6 assesses
+FBX's object model against that; §7 surveys the alternatives, since FBX turns out to be
+the weakest of them and is chosen only because it is the pipeline se-cmd speaks.
 
 ---
 
@@ -220,7 +220,105 @@ It is worth naming as a possible *preview* addition, not as the carrier.
 
 ---
 
-## 7. Where se-cmd stands, and what is worth doing next
+## 7. Other formats
+
+FBX is not the only option, so it is worth knowing what the alternatives actually
+model. Surveyed August 2026; sources at the end of this section.
+
+### 7.1 X3D — the only format that models this natively
+
+X3D's **Particle Systems component** (ISO/IEC 19775-1, clause 40) is a declarative
+emitter-plus-forces model, which is the same shape as a NIF's. A `ParticleSystem` node
+carries `geometryType`, `maxParticles`, `particleLifetime`, `particleSize`,
+`lifetimeVariation`, a `color`/`colorKey` ramp and a `texCoord`/`texCoordKey` ramp; it
+holds **one** emitter node and a **list** of physics models.
+
+The correspondence is real, and in places exact:
+
+| NIF | X3D | Fidelity |
+| --- | --- | --- |
+| `BS Max Vertices` | `maxParticles` | exact |
+| emitter `Speed`, `Speed Variation` | emitter `speed`, `variation` | exact |
+| emitter `Life Span`, `Life Span Variation` | `particleLifetime`, `lifetimeVariation` | exact |
+| `NiPSysBoxEmitter`, `NiPSysCylinderEmitter`, `NiPSysSphereEmitter` | `VolumeEmitter` (or `ConeEmitter` from `Declination`) | shape approximated |
+| `NiPSysMeshEmitter` | `SurfaceEmitter` | close |
+| `NiPSysGravityModifier` | `ForcePhysicsModel.force` = `Gravity Axis` × `Strength` | partial: `Decay`, `Turbulence`, `Force Type` have no home |
+| `BSPSysSimpleColorModifier` | `color` + `colorKey` | close |
+| `BSPSysSubTexModifier` | `texCoord` + `texCoordKey` | close — both are atlas animation |
+| `NiPSysAgeDeathModifier`, `NiPSysPositionModifier`, `NiPSysBoundUpdateModifier` | implicit in the runtime | vanish, harmlessly |
+| `NiPSysRotationModifier`, `BSPSysScaleModifier`, `BSPSysLODModifier`, `BSPSysInheritVelocityModifier` | nothing | lost |
+| modifier `Order` | fixed by the runtime | lost |
+
+X3D has three physics models against nif.xml's twenty-eight modifiers, so the mapping
+is lossy in one direction and unrecoverable in the other: a `VolumeEmitter` cannot say
+whether it was a cylinder or a box. It is a **presentation** target, not a transport —
+but it is the only surveyed format where a particle system arrives as a particle
+system, and X_ITE implements the whole component, so the result is viewable.
+
+### 7.2 USD — the best transport, by being extensible rather than by knowing about particles
+
+OpenUSD has no particle schema. `UsdGeomPointInstancer` is a per-frame set of instanced
+prototypes with born/die `ids` — a baked simulation, in the same category as a point
+cache, not an emitter.
+
+What USD has instead is **schemas as a first-class extension mechanism**. A custom
+typed (IsA) or applied API schema declares NIF's own model — `NiPSysCylinderEmitter`
+with a typed `radius`, `height`, `speed` — into the schema registry, and since USD
+21.08 a *codeless* schema needs no compiled C++ at all, only a plugin manifest. Any
+USD runtime can then read those prims as typed, named, validated data, and they
+compose through layers and variants like anything else.
+
+That is strictly better than FBX custom properties for the same information: typed
+rather than stringly, namespaced rather than prefixed, introspectable, and versioned.
+Nothing will simulate it — but nothing simulates the FBX properties either.
+
+### 7.3 glTF — extensible, but nothing exists
+
+No ratified `KHR_` extension covers particle systems, and the registry contains no
+particle, emitter or VFX extension at all; `ACME_particle_emitter` appears only as a
+naming example in tooling docs. A vendor extension is possible and would be a JSON
+object on a node — the same idea as a USD schema with weaker validation, or as FBX
+custom properties with better conventions.
+
+### 7.4 Alembic — explicitly not this
+
+Alembic is "specifically NOT concerned with storing the complex dependency graph of
+procedural tools", and its own documentation states it has no support for particle
+systems. Particles go through `OPoints`/`IPoints` as a baked per-frame cloud. Same
+category as `FbxCache`, and rejected for the same reason (§6.1): a NIF has no
+simulation to bake.
+
+COLLADA has no particle constructs either and is in practice superseded by glTF for
+interchange.
+
+### 7.5 Summary
+
+| Format | Models an emitter | Carries the NIF description losslessly | Anything renders it |
+| --- | --- | --- | --- |
+| **X3D** | yes, natively | no — 3 physics models against 28 modifiers | yes (X_ITE) |
+| **USD** | no, but a custom schema declares it | yes, typed and validated | no |
+| **glTF** | no; a vendor extension would be needed | yes, as JSON | no |
+| **FBX** | no | yes, as string properties | no |
+| **Alembic** | no, and says so | no — baked points only | plays back |
+
+Two different jobs, and no format does both. **X3D is the one worth having for showing
+a system to someone; USD is the one worth having for moving it without loss.** FBX
+does the second job less well than USD and the first not at all — it is the right
+target only because it is the pipeline se-cmd already speaks.
+
+**Sources**
+
+- [X3D Particle systems component, ISO/IEC 19775-1:2023](https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/particleSystems.html)
+- [X_ITE ParticleSystem node](https://create3000.github.io/x_ite/components/particlesystems/particlesystem/)
+- [UsdGeomPointInstancer](https://openusd.org/docs/api/class_usd_geom_point_instancer.html)
+- [AOUSD — What are OpenUSD schemas?](https://aousd.org/blog/explainer-series-for-developers-what-are-openusd-schemas/)
+- [Generating new schema classes (codeless schemas)](https://openusd.org/release/tut_generating_new_schema.html)
+- [glTF extension registry](https://github.com/KhronosGroup/glTF/blob/main/extensions/README.md)
+- [Alembic](https://en.wikipedia.org/wiki/Alembic_(computer_graphics)) and [Alembic particle support discussion](https://groups.google.com/g/alembic-discussion/c/tMNOBWtE5hc)
+
+---
+
+## 8. Where se-cmd stands, and what is worth doing next
 
 se-cmd implements **B** (`Fbx/FbxParticleWriter.cs`, `Nif/NifParticleWriter.cs`): the
 system block, its data block and its modifier stack in order, as prefixed string
