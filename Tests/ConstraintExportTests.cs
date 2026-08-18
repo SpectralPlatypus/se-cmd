@@ -80,9 +80,14 @@ namespace SECmd.Tests
 
             FbxObject point = Assert.Single(AttachPoints(scene));
 
+            // Far body first -- which is also the parent's own name -- then the
+            // body that owned the constraint. Reading it back, the parent gives one
+            // entity and the second half the other.
             Assert.Equal(
-                $"PegRight01_rb{FbxConstraintWriter.NameSeparator}RopeL01_rb{FbxConstraintWriter.NameSuffix}",
+                $"RopeL01_rb{FbxConstraintWriter.NameSeparator}PegRight01_rb{FbxConstraintWriter.NameSuffix}",
                 point.Name);
+
+            Assert.Equal("RopeL01_rb", Assert.Single(scene.ParentsOf(point.Id)).Name);
         }
 
         [Fact]

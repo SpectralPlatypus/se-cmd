@@ -73,7 +73,12 @@ namespace SECmd.Fbx
             if (parent is null)
                 return null;
 
-            string name = $"{a.Name}{NameSeparator}{b.Name}{NameSuffix}";
+            // Named far body first, which is also the parent's own name, then the
+            // owning body. The order looks redundant and is not: reading the node
+            // back, the parent gives one entity and the name's second half the
+            // other, so the second half is the only part carrying anything new
+            // (constraint spec §1.1).
+            string name = $"{b.Name}{NameSeparator}{a.Name}{NameSuffix}";
 
             FbxObject node = FbxMeshWriter.AddModel(scene, name, "Null", FrameOf(model, descriptor));
             scene.Connect(node, parent);
