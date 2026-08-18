@@ -1147,6 +1147,23 @@ namespace SECmd.Nif
         }
 
         /// <summary>
+        /// Replaces the string table wholesale, keeping the given order.
+        /// </summary>
+        /// <remarks>
+        /// For building a model that has to agree with an existing file, where the
+        /// indices are already written into the blocks and the table has to line up
+        /// with them exactly. <see cref="AddString"/> cannot do that job: it interns,
+        /// so it folds duplicates together and refuses empty strings, and Bethesda's
+        /// files contain both. One empty entry a third of the way down a table shifts
+        /// every name after it onto the wrong index.
+        /// </remarks>
+        public void SetStringTable(IEnumerable<string> strings)
+        {
+            _strings.Clear();
+            _strings.AddRange(strings);
+        }
+
+        /// <summary>
         /// Sets a string field, interning the text when the file version stores
         /// strings as indices into the header table.
         /// </summary>
