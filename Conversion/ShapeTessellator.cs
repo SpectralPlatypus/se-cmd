@@ -1,0 +1,491 @@
+using SECmd.Nif;
+
+namespace SECmd.Conversion
+{
+    /// <summary>
+    /// Turns Havok collision primitives into triangle meshes.
+    /// </summary>
+    /// <remarks>
+    /// FBX has no shape primitives, so a collision shape can only cross as geometry
+    /// (spec §4.8). FBXWrangler gets these from the Havok SDK's
+    /// <c>hkpShapeConverter</c>; we generate them directly, which is elementary for
+    /// the primitives and a convex hull for the vertex shapes.
+    ///
+    /// The result is display and editing geometry. It never goes back to Havok as-is
+    /// — the import side reads the node naming and rebuilds real shapes — so
+    /// tessellation density is a readability choice, not a fidelity one.
+    /// </remarks>
+    public static class ShapeTessellator
+    {
+        /// <summary>
+        /// Havok works in metres, NIF in Skyrim units. This is the conversion
+        /// FBXWrangler applies when emitting collision geometry.
+        /// </summary>
+        public const float BhkScaleFactor = 69.99125f;
+
+        /// <summary>Its inverse as FBXWrangler spells it, which is not exact.</summary>
+        public const float BhkScaleFactorInverse = 0.01428f;
+
+        /// <summary>A box centred on the origin, given its half extents.</summary>
+        public static MeshGeometry Box(NifVector3 halfExtents)
+        {
+            var mesh = new MeshGeometry();
+            float x = halfExtents.X, y = halfExtents.Y, z = halfExtents.Z;
+
+            NifVector3[] corners =
+            [
+                new(-x, -y, -z), new(x, -y, -z), new(x, y, -z), new(-x, y, -z),
+                new(-x, -y, z), new(x, -y, z), new(x, y, z), new(-x, y, z)
+            ];
+
+            mesh.Vertices.AddRange(corners);
+
+            // Six faces, wound outwards.
+            int[][] faces =
+            [
+                [0, 3, 2, 1], // -Z
+                [4, 5, 6, 7], // +Z
+                [0, 1, 5, 4], // -Y
+                [2, 3, 7, 6], // +Y
+                [0, 4, 7, 3], // -X
+                [1, 2, 6, 5]  // +X
+            ];
+
+            foreach (int[] face in faces)
+            {
+                mesh.Triangles.Add(new NifTriangle((ushort)face[0], (ushort)face[1], (ushort)face[2]));
+                mesh.Triangles.Add(new NifTriangle((ushort)face[0], (ushort)face[2], (ushort)face[3]));
+            }
+
+            mesh.RecalculateNormals();
+            return mesh;
+        }
+
+        /// <summary>A UV sphere centred on the origin.</summary>
+        /// <remarks>
+        /// Built topologically closed: the poles are single vertices rather than
+        /// degenerate rings, and the last segment reuses the first instead of
+        /// duplicating it at the seam. A collision hull whose edges are not shared
+        /// has holes as far as a physics engine is concerned, even when it looks
+        /// solid.
+        /// </remarks>
+        public static MeshGeometry Sphere(float radius, int segments = 16, int rings = 8)
+        {
+            var mesh = new MeshGeometry();
+
+            segments = Math.Max(3, segments);
+            rings = Math.Max(2, rings);
+
+            var north = (ushort)mesh.Vertices.Count;
+            mesh.Vertices.Add(new NifVector3(0f, 0f, radius));
+
+            // Interior rings only; the poles are separate.
+            for (int ring = 1; ring < rings; ring++)
+            {
+                float phi = (float)ring / rings * MathF.PI;
+                float z = MathF.Cos(phi) * radius;
+                float ringRadius = MathF.Sin(phi) * radius;
+
+                for (int segment = 0; segment < segments; segment++)
+                {
+                    float theta = (float)segment / segments * MathF.Tau;
+
+                    mesh.Vertices.Add(new NifVector3(
+                        MathF.Cos(theta) * ringRadius,
+                        MathF.Sin(theta) * ringRadius,
+                        z));
+                }
+            }
+
+            var south = (ushort)mesh.Vertices.Count;
+            mesh.Vertices.Add(new NifVector3(0f, 0f, -radius));
+
+            int First(int ring) => 1 + (ring - 1) * segments;
+
+            // Cap fans.
+            for (int segment = 0; segment < segments; segment++)
+            {
+                int next = (segment + 1) % segments;
+
+                mesh.Triangles.Add(new NifTriangle(
+                    north, (ushort)(First(1) + segment), (ushort)(First(1) + next)));
+
+                mesh.Triangles.Add(new NifTriangle(
+                    south, (ushort)(First(rings - 1) + next), (ushort)(First(rings - 1) + segment)));
+            }
+
+            // Bands between consecutive rings.
+            for (int ring = 1; ring < rings - 1; ring++)
+            {
+                for (int segment = 0; segment < segments; segment++)
+                {
+                    int next = (segment + 1) % segments;
+
+                    var a = (ushort)(First(ring) + segment);
+                    var b = (ushort)(First(ring) + next);
+                    var c = (ushort)(First(ring + 1) + segment);
+                    var d = (ushort)(First(ring + 1) + next);
+
+                    mesh.Triangles.Add(new NifTriangle(a, c, b));
+                    mesh.Triangles.Add(new NifTriangle(b, c, d));
+                }
+            }
+
+            mesh.RecalculateNormals();
+            return mesh;
+        }
+
+        /// <summary>
+        /// A capsule: a cylinder between two points, capped with hemispheres.
+        /// </summary>
+        public static MeshGeometry Capsule(NifVector3 first, NifVector3 second, float radius, int segments = 16)
+        {
+            segments = Math.Max(3, segments);
+
+            // Build along the axis, then rotate the whole thing into place.
+            var axis = new NifVector3(second.X - first.X, second.Y - first.Y, second.Z - first.Z);
+            float length = MathF.Sqrt(axis.X * axis.X + axis.Y * axis.Y + axis.Z * axis.Z);
+
+            if (length < 1e-6f)
+                return Sphere(radius, segments);
+
+            var mesh = new MeshGeometry();
+
+            // Two rings for the cylinder body, seam shared so the surface stays
+            // topologically closed.
+            for (int end = 0; end < 2; end++)
+            {
+                float z = end == 0 ? 0f : length;
+
+                for (int segment = 0; segment < segments; segment++)
+                {
+                    float theta = (float)segment / segments * MathF.Tau;
+                    mesh.Vertices.Add(new NifVector3(MathF.Cos(theta) * radius, MathF.Sin(theta) * radius, z));
+                }
+            }
+
+            for (int segment = 0; segment < segments; segment++)
+            {
+                int next = (segment + 1) % segments;
+
+                var a = (ushort)segment;
+                var b = (ushort)next;
+                var c = (ushort)(segments + segment);
+                var d = (ushort)(segments + next);
+
+                mesh.Triangles.Add(new NifTriangle(a, c, b));
+                mesh.Triangles.Add(new NifTriangle(b, c, d));
+            }
+
+            // Caps as single fan points: enough to close the volume without doubling
+            // the vertex count, since this is display geometry.
+            var bottom = (ushort)mesh.Vertices.Count;
+            mesh.Vertices.Add(new NifVector3(0f, 0f, -radius));
+
+            var top = (ushort)mesh.Vertices.Count;
+            mesh.Vertices.Add(new NifVector3(0f, 0f, length + radius));
+
+            for (int segment = 0; segment < segments; segment++)
+            {
+                int next = (segment + 1) % segments;
+
+                mesh.Triangles.Add(new NifTriangle(bottom, (ushort)next, (ushort)segment));
+                mesh.Triangles.Add(new NifTriangle(top, (ushort)(segments + segment), (ushort)(segments + next)));
+            }
+
+            AlignToAxis(mesh, first, axis, length);
+            mesh.RecalculateNormals();
+            return mesh;
+        }
+
+        /// <summary>
+        /// Rotates a mesh built along +Z so that +Z lies along <paramref name="axis"/>,
+        /// then moves it to <paramref name="origin"/>.
+        /// </summary>
+        private static void AlignToAxis(MeshGeometry mesh, NifVector3 origin, NifVector3 axis, float length)
+        {
+            var d = new NifVector3(axis.X / length, axis.Y / length, axis.Z / length);
+
+            // Rotation taking +Z onto d, via the axis-angle between them.
+            var z = new NifVector3(0f, 0f, 1f);
+            float dot = d.Z;
+
+            NifMatrix33 rotation;
+
+            if (dot > 0.99999f)
+            {
+                rotation = NifMatrix33.Identity;
+            }
+            else if (dot < -0.99999f)
+            {
+                // Antiparallel: a half turn about any perpendicular axis.
+                rotation = new NifMatrix33 { M11 = 1f, M22 = -1f, M33 = -1f };
+            }
+            else
+            {
+                var v = new NifVector3(
+                    z.Y * d.Z - z.Z * d.Y,
+                    z.Z * d.X - z.X * d.Z,
+                    z.X * d.Y - z.Y * d.X);
+
+                float c = dot;
+                float k = 1f / (1f + c);
+
+                // Rodrigues' formula, expanded and transposed: it is usually written
+                // for column vectors, while NifTransform.Apply multiplies a row
+                // vector, so the rows here have to be the images of the basis
+                // vectors. Written the other way round, +Z lands on (-d.x, -d.y, d.z)
+                // and the shape points the wrong way.
+                rotation = new NifMatrix33
+                {
+                    M11 = v.X * v.X * k + c,
+                    M12 = v.X * v.Y * k + v.Z,
+                    M13 = v.X * v.Z * k - v.Y,
+                    M21 = v.Y * v.X * k - v.Z,
+                    M22 = v.Y * v.Y * k + c,
+                    M23 = v.Y * v.Z * k + v.X,
+                    M31 = v.Z * v.X * k + v.Y,
+                    M32 = v.Z * v.Y * k - v.X,
+                    M33 = v.Z * v.Z * k + c
+                };
+            }
+
+            var transform = new NifTransform(origin, rotation, 1f);
+
+            for (int i = 0; i < mesh.Vertices.Count; i++)
+                mesh.Vertices[i] = transform.Apply(mesh.Vertices[i]);
+        }
+
+        /// <summary>
+        /// The convex hull of a point set, as a triangle mesh.
+        /// </summary>
+        /// <remarks>
+        /// An incremental hull: start from a tetrahedron, then for each remaining
+        /// point delete every face it can see and stitch the resulting boundary back
+        /// to it. Degenerate input (fewer than four points, or all points coplanar)
+        /// has no hull, and yields an empty mesh rather than a broken one.
+        /// </remarks>
+        public static MeshGeometry ConvexHull(IReadOnlyList<NifVector3> points)
+        {
+            var mesh = new MeshGeometry();
+
+            if (points.Count < 4)
+                return mesh;
+
+            if (!FindInitialTetrahedron(points, out int[] seed))
+                return mesh;
+
+            var vertices = new List<NifVector3>(points);
+            var faces = new List<(int A, int B, int C)>
+            {
+                (seed[0], seed[1], seed[2]),
+                (seed[0], seed[2], seed[3]),
+                (seed[0], seed[3], seed[1]),
+                (seed[1], seed[3], seed[2])
+            };
+
+            // Wind every seed face away from the centroid.
+            NifVector3 inside = Average([vertices[seed[0]], vertices[seed[1]], vertices[seed[2]], vertices[seed[3]]]);
+
+            for (int i = 0; i < faces.Count; i++)
+            {
+                if (SignedDistance(vertices, faces[i], inside) > 0)
+                    faces[i] = (faces[i].A, faces[i].C, faces[i].B);
+            }
+
+            for (int p = 0; p < vertices.Count; p++)
+            {
+                if (seed.Contains(p))
+                    continue;
+
+                NifVector3 point = vertices[p];
+
+                var visible = new List<(int A, int B, int C)>();
+
+                foreach ((int A, int B, int C) face in faces)
+                {
+                    if (SignedDistance(vertices, face, point) > 1e-6f)
+                        visible.Add(face);
+                }
+
+                if (visible.Count == 0)
+                    continue;
+
+                // Edges on the boundary of the visible region appear exactly once
+                // across it; interior edges appear twice and cancel.
+                var boundary = new List<(int From, int To)>();
+
+                foreach ((int A, int B, int C) face in visible)
+                {
+                    foreach ((int From, int To) edge in new[] { (face.A, face.B), (face.B, face.C), (face.C, face.A) })
+                    {
+                        int at = boundary.FindIndex(e => e.From == edge.To && e.To == edge.From);
+
+                        if (at >= 0)
+                            boundary.RemoveAt(at);
+                        else
+                            boundary.Add(edge);
+                    }
+                }
+
+                faces.RemoveAll(visible.Contains);
+
+                foreach ((int from, int to) in boundary)
+                    faces.Add((from, to, p));
+            }
+
+            // Keep only the vertices the hull actually uses, renumbered.
+            var remap = new Dictionary<int, ushort>();
+
+            foreach ((int A, int B, int C) face in faces)
+            {
+                mesh.Triangles.Add(new NifTriangle(Index(face.A), Index(face.B), Index(face.C)));
+            }
+
+            mesh.RecalculateNormals();
+            return mesh;
+
+            ushort Index(int original)
+            {
+                if (remap.TryGetValue(original, out ushort mapped))
+                    return mapped;
+
+                mapped = (ushort)mesh.Vertices.Count;
+                remap[original] = mapped;
+                mesh.Vertices.Add(vertices[original]);
+                return mapped;
+            }
+        }
+
+        /// <summary>
+        /// Finds four points that are not coplanar, to seed the hull.
+        /// </summary>
+        private static bool FindInitialTetrahedron(IReadOnlyList<NifVector3> points, out int[] seed)
+        {
+            seed = [];
+
+            // Two points that are actually distinct.
+            int a = 0;
+            int b = -1;
+
+            for (int i = 1; i < points.Count; i++)
+            {
+                if (DistanceSquared(points[a], points[i]) > 1e-12f)
+                {
+                    b = i;
+                    break;
+                }
+            }
+
+            if (b < 0)
+                return false;
+
+            // A third that is off that line.
+            int c = -1;
+            float best = 1e-12f;
+
+            for (int i = 0; i < points.Count; i++)
+            {
+                if (i == a || i == b)
+                    continue;
+
+                float area = TriangleAreaSquared(points[a], points[b], points[i]);
+
+                if (area > best)
+                {
+                    best = area;
+                    c = i;
+                }
+            }
+
+            if (c < 0)
+                return false;
+
+            // A fourth off that plane.
+            int d = -1;
+            best = 1e-9f;
+
+            for (int i = 0; i < points.Count; i++)
+            {
+                if (i == a || i == b || i == c)
+                    continue;
+
+                float volume = MathF.Abs(SignedDistance(points, (a, b, c), points[i]));
+
+                if (volume > best)
+                {
+                    best = volume;
+                    d = i;
+                }
+            }
+
+            if (d < 0)
+                return false;
+
+            seed = [a, b, c, d];
+            return true;
+        }
+
+        /// <summary>How far a point lies on the outward side of a face's plane.</summary>
+        private static float SignedDistance(IReadOnlyList<NifVector3> points, (int A, int B, int C) face, NifVector3 point)
+        {
+            NifVector3 a = points[face.A], b = points[face.B], c = points[face.C];
+
+            float ux = b.X - a.X, uy = b.Y - a.Y, uz = b.Z - a.Z;
+            float vx = c.X - a.X, vy = c.Y - a.Y, vz = c.Z - a.Z;
+
+            float nx = uy * vz - uz * vy;
+            float ny = uz * vx - ux * vz;
+            float nz = ux * vy - uy * vx;
+
+            float length = MathF.Sqrt(nx * nx + ny * ny + nz * nz);
+
+            if (length < 1e-12f)
+                return 0f;
+
+            return ((point.X - a.X) * nx + (point.Y - a.Y) * ny + (point.Z - a.Z) * nz) / length;
+        }
+
+        private static NifVector3 Average(IReadOnlyList<NifVector3> points)
+        {
+            float x = 0, y = 0, z = 0;
+
+            foreach (NifVector3 p in points)
+            {
+                x += p.X;
+                y += p.Y;
+                z += p.Z;
+            }
+
+            return new NifVector3(x / points.Count, y / points.Count, z / points.Count);
+        }
+
+        private static float DistanceSquared(NifVector3 a, NifVector3 b)
+        {
+            float dx = a.X - b.X, dy = a.Y - b.Y, dz = a.Z - b.Z;
+            return dx * dx + dy * dy + dz * dz;
+        }
+
+        private static float TriangleAreaSquared(NifVector3 a, NifVector3 b, NifVector3 c)
+        {
+            float ux = b.X - a.X, uy = b.Y - a.Y, uz = b.Z - a.Z;
+            float vx = c.X - a.X, vy = c.Y - a.Y, vz = c.Z - a.Z;
+
+            float nx = uy * vz - uz * vy;
+            float ny = uz * vx - ux * vz;
+            float nz = ux * vy - uy * vx;
+
+            return nx * nx + ny * ny + nz * nz;
+        }
+
+        /// <summary>Scales every vertex, for the metres-to-units conversion.</summary>
+        public static void Scale(MeshGeometry mesh, float factor)
+        {
+            for (int i = 0; i < mesh.Vertices.Count; i++)
+            {
+                NifVector3 v = mesh.Vertices[i];
+                mesh.Vertices[i] = new NifVector3(v.X * factor, v.Y * factor, v.Z * factor);
+            }
+        }
+    }
+}

@@ -9,6 +9,8 @@ namespace SECmd
         {
             RootCommand root = new("se-cmd utility");
             Commands.RetargetCreature.Register(root);
+            Commands.ExportFbx.Register(root);
+            Commands.ImportFbx.Register(root);
 
             root.Parse(args).Invoke();
         }

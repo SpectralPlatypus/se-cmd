@@ -16,7 +16,59 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="Tests\**" />
+    <EmbeddedResource Remove="Tests\**" />
+    <None Remove="Tests\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Remove="Commands\ExportNif.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="External\nifxml\nif.xml" LogicalName="nif.xml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Lets tests reach wire-format helpers that are not public API. -->
+    <InternalsVisibleTo Include="se-cmd.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="External\MeshIO\**" />
+    <EmbeddedResource Remove="External\MeshIO\**" />
+    <None Remove="External\MeshIO\**" />
+  </ItemGroup>
+
+  <!--
+    MeshIO's raw FBX document layer, compiled straight into this assembly.
+
+    We only want the node-tree reader and writer, not MeshIO's scene model: the
+    FBX semantics we need (skin deformers, bind poses, animation curves, custom
+    properties) are ours to build. Taking just these files avoids MeshIO's
+    CSUtilities and Newtonsoft.Json dependencies entirely, and compiling them
+    here rather than referencing the package makes its internal raw writer
+    reachable, since MeshIO only exposes raw reading publicly.
+
+    The submodule stays at pristine upstream so it can be updated in place.
+  -->
+  <ItemGroup>
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\ContentType.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\FbxBinary.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\FbxFileToken.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\FbxNode.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\FbxNodeCollection.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\FbxRootNode.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\FbxVersion.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\DeflateWithChecksum.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\ErrorLevel.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\Exceptions\FbxParserException.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\Parsers\IFbxParser.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\Parsers\FbxBinaryParser.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\Parsers\FbxAsciiParser.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\Writers\IFbxStreamWriter.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\Writers\FbxBinaryWriter.cs" />
+    <Compile Include="External\MeshIO\src\MeshIO\Formats\Fbx\Writers\FbxAsciiWriter.cs" />
   </ItemGroup>
 
   <ItemGroup>

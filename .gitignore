@@ -426,3 +426,7 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Local notes for coding agents, not part of the project
+CLAUDE.md
+docs/nif-fbx-knowledge-base.md
