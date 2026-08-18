@@ -521,6 +521,60 @@ Havok shapes convert back via `convert_from_hk` (L4665), the mirror of §4.8, co
 list, convex transform, transform, MOPP, sphere, box, capsule, convex vertices and
 compressed mesh. Capsule endpoints are **swapped** relative to Havok.
 
+#### 5.7.1 Convex hull plane equations
+
+`bhkConvexVerticesShape` stores the hull's faces as half spaces, and the convention is
+stated in nif.xml rather than inferable:
+
+> the normal points **to the exterior**, and the fourth component is **minus** the dot
+> product of that normal with any vertex on the plane.
+
+So a face at *x = +r* with normal `(1, 0, 0)` stores `-r`. Havok then tests containment
+with `n·x + d <= 0`. ck-cmd never computes these — it copies
+`hkpConvexVerticesShape::getPlaneEquations()` verbatim — so the convention only becomes
+this port's problem, and it is one where a mistake is invisible: the planes still sit in
+the right places, and what inverts is which side of each counts as solid. A hull built
+with the sign flipped collides everywhere except where the object is.
+
+A symmetric shape hides it completely. Negating every distance of a shape centred on the
+origin maps its plane set onto itself, so a box round-trips correctly under either sign.
+Testing this needs a hull that is not symmetric about any axis.
+
+nif.xml also states that both `Vertices` and `Normals` are **lexicographically sorted**.
+The shipped files carry Havok's own order; this port does not reproduce it.
+
+#### 5.7.2 Mass, and the tensor that follows from it
+
+Mass and inertia are different kinds of fact, and only one of them is authored.
+
+The **mass is authored**: ck-cmd's own generated examples give a box and a sphere of
+different sizes the same mass, `0.0232956`, which no density can produce. It has to be
+carried; nothing about a scene implies it.
+
+The **inertia tensor is derived** from that mass and the shape, which is why ck-cmd does
+not carry it either — it asks `hkpInertiaTensorComputer`. Havok's tensors are the
+textbook ones for a solid body of uniform density, so they can be computed directly, and
+the check that this is the same computation is that it reproduces what the generated
+files hold, given only the mass and shape those files also carry:
+
+| Shape | Tensor | Reproduces |
+| --- | --- | --- |
+| Box, half-extents *h* | `m/3 (h² + h²)` per axis | `generate_rb_box.nif`, to 9 dp |
+| Sphere, radius *r* | `2/5 m r²` | `generate_rb_sphere.nif`, to 9 dp |
+| Capsule | cylinder + two hemispheres, parallel axis, rotated onto the axis | — |
+| Convex hull | integrated over the faces | `generate_rb.nif`, to 9 dp |
+
+The face integration has a trap. Over a tetrahedron the squared terms integrate with
+`det/60` and the cross terms with `det/120`; sharing one constant between them gives a
+diagonal exactly **half** of what it should be, with the products still correct.
+
+**Statics keep neither.** The layer is the whole of the decision, per the table above,
+and the carried mass is dropped rather than trusted — a static with a mass is treated as
+movable, which is how a piece of scenery ends up falling through the world. Note that
+all three `generate_rb*` examples are `SKYL_STATIC` and *still* carry a mass and tensor:
+they come from ck-cmd's `generate_rb` generator, not from its import path, so they
+disagree with ck-cmd's own rule. Importing them zeroes both, by design.
+
 ### 5.8 Output file settings
 
 `SaveNif` (L5793) writes version `20.2.0.7`, user version 12, user version 2 **83**
@@ -689,3 +743,8 @@ Reproduced only where behaviour depends on them; otherwise fixed and noted.
 | Miniball | Replaced with an equivalent bounding-sphere routine. |
 | Havok | No SDK link. MOPP generation goes through `NifMopp.dll` as NifSkope does; shape tessellation and convex hulls are implemented directly. See §8. |
 | Reference defects | Fixed unless behaviour depends on them, and listed in §9. |
+| Havok material | Carried as ck-cmd carries it (§4.8): an FBX material on the collision mesh named after the enum, with the layer as a `CollisionLayer` property. The names come from nif.xml's own `SkyrimHavokMaterial` and `SkyrimLayer` rather than the table ck-cmd hand-wrote, so the two spellings cannot drift. |
+| Inertia tensors | Computed directly (§5.7.2) rather than obtained from Havok, and held to the numbers ck-cmd's generated files carry. |
+| Node kinds | The NIF block type of every node, and of the root, travels in a `nif_block_type` property. FBX has one kind of node; NIF has a dozen that differ in what the engine does with them. The root matters most: `BSXFlags` asks twice whether it is exactly `NiNode` (see `bsxflags-spec.md` §3.2, §3.4), so flattening it changes what the file claims about itself. |
+| `bhkCOFlags` | Carried in a `nif_collision_flags` property rather than derived from the layer. ck-cmd derives them because an FBX authored in a DCC tool has none to carry; carrying wins where the data exists, and the derivation remains the fallback. |
+| `BSXFlags` | Recalculated on import rather than carried, as ck-cmd does. See `bsxflags-spec.md`. |
