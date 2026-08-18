@@ -228,12 +228,33 @@ model. Surveyed August 2026; sources at the end of this section.
 ### 7.1 X3D — the only format that models this natively
 
 X3D's **Particle Systems component** (ISO/IEC 19775-1, clause 40) is a declarative
-emitter-plus-forces model, which is the same shape as a NIF's. A `ParticleSystem` node
-carries `geometryType`, `maxParticles`, `particleLifetime`, `particleSize`,
-`lifetimeVariation`, a `color`/`colorKey` ramp and a `texCoord`/`texCoordKey` ramp; it
-holds **one** emitter node and a **list** of physics models.
+emitter-plus-forces model, which is the same shape as a NIF's.
 
-The correspondence is real, and in places exact:
+`ParticleSystem` is a shape node — it has `appearance` and `geometry` like any other —
+and adds `geometryType` (`"POINT"`, `"LINE"`, `"TRIANGLE"`, `"QUAD"`, `"SPRITE"`,
+`"GEOMETRY"`), `maxParticles`, `particleLifetime`, `particleSize`,
+`lifetimeVariation`, `enabled`, `createParticles`, and two ramps: `color` with
+`colorKey`, and `texCoord` with `texCoordKey`. It holds **one** `emitter` and a
+**list** of `physics` models. The complete inventory is small:
+
+| Emitters (`X3DParticleEmitterNode`) | Distinguishing fields |
+| --- | --- |
+| `PointEmitter` | `position`, `direction` |
+| `ConeEmitter` | `position`, `direction`, `angle` |
+| `ExplosionEmitter` | `position` |
+| `PolylineEmitter` | `coord`, `coordIndex`, `direction` |
+| `SurfaceEmitter` | `surface` (a geometry node) |
+| `VolumeEmitter` | `coord`, `coordIndex`, `direction`, `internal` |
+
+All six share `speed`, `variation`, `mass`, `surfaceArea` and `on`.
+
+| Physics models (`X3DParticlePhysicsModelNode`) | Fields |
+| --- | --- |
+| `ForcePhysicsModel` | `force` |
+| `WindPhysicsModel` | `direction`, `speed`, `gustiness`, `turbulence` |
+| `BoundedPhysicsModel` | `geometry` |
+
+The correspondence with a NIF is real, and in places exact:
 
 | NIF | X3D | Fidelity |
 | --- | --- | --- |
@@ -243,6 +264,10 @@ The correspondence is real, and in places exact:
 | `NiPSysBoxEmitter`, `NiPSysCylinderEmitter`, `NiPSysSphereEmitter` | `VolumeEmitter` (or `ConeEmitter` from `Declination`) | shape approximated |
 | `NiPSysMeshEmitter` | `SurfaceEmitter` | close |
 | `NiPSysGravityModifier` | `ForcePhysicsModel.force` = `Gravity Axis` × `Strength` | partial: `Decay`, `Turbulence`, `Force Type` have no home |
+| `NiPSysDragModifier`, `NiPSysAirFieldModifier` | `WindPhysicsModel` | approximate |
+| `NiPSysColliderManager` + planar/spherical collider | `BoundedPhysicsModel.geometry` | approximate: bounds, not collision response |
+| emitter `Initial Radius` | `particleSize` | exact only while `BSPSysScaleModifier` is absent |
+| `World Space` | implied by where the node sits | lost |
 | `BSPSysSimpleColorModifier` | `color` + `colorKey` | close |
 | `BSPSysSubTexModifier` | `texCoord` + `texCoordKey` | close — both are atlas animation |
 | `NiPSysAgeDeathModifier`, `NiPSysPositionModifier`, `NiPSysBoundUpdateModifier` | implicit in the runtime | vanish, harmlessly |
@@ -318,7 +343,7 @@ target only because it is the pipeline se-cmd already speaks.
 
 ---
 
-## 8. Where se-cmd stands, and what is worth doing next
+## 8. Where se-cmd stands
 
 se-cmd implements **B** (`Fbx/FbxParticleWriter.cs`, `Nif/NifParticleWriter.cs`): the
 system block, its data block and its modifier stack in order, as prefixed string
@@ -326,8 +351,10 @@ properties on the node that already stands for the system. The node keeps its na
 transform and animation; no geometry is invented for it. Everything in §2.2 and §3
 survives a round trip except the links.
 
-The gap is §3.1. Three of the fixture's links are dropped, two of them to named nodes
-that exist in the exported scene as FBX Models:
+### 8.1 The remaining gap
+
+§3.1. Three of the fixture's links are dropped, two of them to named nodes that exist
+in the exported scene as FBX Models:
 
 ```
 NiPSysCylinderEmitter.Emitter Object -> NiNode "PCloud06-Emitter"
@@ -347,3 +374,36 @@ stack in the outliner where a rigger could see and reorder it, and would shorten
 property names from `npsm_7_frame_count` to `frame_count`. It is a larger change and
 buys nothing in fidelity over C, so it is worth doing only if editing particle stacks in
 a DCC tool becomes a goal rather than transporting them.
+
+### 8.2 What the survey changes, and what it does not
+
+§7 establishes that FBX is the weakest of the surveyed formats for this: worse than USD
+at transport, and unlike X3D it cannot show a particle system at all. That is worth
+recording, and it does **not** change what se-cmd should do next, for two reasons.
+
+The first is that the two jobs are separable, and only one of them is se-cmd's.
+*Transporting* a system — getting it out of a NIF, through an editor, and back without
+loss — is what a NIF ↔ FBX converter is for, and options B and C do it. *Presenting*
+one — showing a modder what the effect looks like — is a different tool, and X3D is
+what it would be written against.
+
+The second is that FBX is not a technical choice here. It is the format FBXWrangler
+speaks, the format Blender and Max import, and the format the rest of this project
+already reads and writes. Moving particles alone to USD would mean a second exporter,
+a second importer and a scene split across two files, for information that already
+survives in the FBX intact.
+
+So the survey's practical consequences are narrower than its conclusions:
+
+- **Do C.** The dropped links are a real loss, and FBX carries them natively (§6).
+- **If a USD path is ever added** for other reasons, the particle system should move to
+  a codeless custom schema rather than being re-encoded as strings. §7.2's argument is
+  that the same information becomes typed and validated for no extra work, and the
+  field-by-field walk this project already uses to flatten a block (`NifFieldCodec`) is
+  most of what a schema generator would need.
+- **If a preview is ever wanted**, X3D is the target, one-way, generated from the same
+  neutral description rather than from the NIF. §7.1's table is the mapping; the losses
+  in it are acceptable for looking at something and not for storing it.
+- **Do not bake.** Both `FbxCache` (§6.1) and Alembic (§7.4) want a simulation, and a
+  NIF contains none. Producing one means reimplementing Gamebryo's particle engine, and
+  the result would be one-way even then.
