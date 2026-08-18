@@ -144,6 +144,14 @@ namespace SECmd.Nif
             }
 
             var leaf = new NifItem(def, parent) { Value = new NifValue(def.ValueType) };
+
+            // A link that has not been set points at nothing, and nothing is -1 here.
+            // Left at zero it would point at the first block in the file, which for a
+            // model built from scratch is the root -- so every ref nobody assigned
+            // would quietly claim the root as its target.
+            if (leaf.Value.IsLink)
+                leaf.Value.SetLink(-1);
+
             ApplyDefault(leaf);
             parent.AddChild(leaf);
         }
