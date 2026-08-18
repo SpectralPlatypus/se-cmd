@@ -276,9 +276,44 @@ The correspondence with a NIF is real, and in places exact:
 
 X3D has three physics models against nif.xml's twenty-eight modifiers, so the mapping
 is lossy in one direction and unrecoverable in the other: a `VolumeEmitter` cannot say
-whether it was a cylinder or a box. It is a **presentation** target, not a transport —
-but it is the only surveyed format where a particle system arrives as a particle
-system, and X_ITE implements the whole component, so the result is viewable.
+whether it was a cylinder or a box.
+
+#### Who actually implements it
+
+This is what decides whether X3D is a real option, and it splits cleanly: **runtimes
+implement the Particle Systems component; authoring tools do not.**
+
+Among 3D suites, X3D is native in **Blender**, **Modo**, **Rhino**, **ZBrush**,
+**Okino PolyTrans**, **Clara.io** and **Cura**, and reaches **3ds Max** and **Maya**
+only through third-party plugins (InstantExport, Bacon XjF). But that support is
+*geometry interchange*: Blender's exporter documents coverage of the Rendering and
+Geometry3D components, image and pixel textures, `TextureTransform`, the Lighting
+component and viewpoints — and no particle systems. **No surveyed authoring tool round
+trips a `ParticleSystem`.**
+
+Runtimes are the other story. **X_ITE** implements the whole component — all six
+emitters and all three physics models. **Castle Game Engine** has its own particle
+system and lists following X3D's component as a planned feature rather than a
+delivered one.
+
+So X3D is a **presentation** target and specifically a *viewer* target: it is the only
+surveyed format where a particle system arrives as a particle system, and the thing
+that will show it is a browser runtime, not a DCC suite. That is a narrower claim than
+"X3D supports particles", and it is the one that holds.
+
+#### Writing it from C#
+
+There is no C# X3D library. The Web3D Consortium ships official language bindings for
+Java (X3DJSAIL) and Python (X3DPSAIL), both generated from the X3D Unified Object
+Model; C, C++ and C# bindings are listed as work in progress and are not delivered.
+Nothing on NuGet targets X3D, and the general commercial 3D libraries do not list it
+among their formats.
+
+This matters less than it sounds. X3D's `.x3d` encoding is **XML**, with a published
+schema and DTD, and the subset needed here is one `ParticleSystem` element, one
+emitter and a handful of physics models. Writing that needs `System.Xml.Linq` and
+nothing else — no dependency, and no binding to wait for. Reading X3D would be a
+different proposition, and is not something this project would need to do.
 
 ### 7.2 USD — the best transport, by being extensible rather than by knowing about particles
 
@@ -335,6 +370,11 @@ target only because it is the pipeline se-cmd already speaks.
 
 - [X3D Particle systems component, ISO/IEC 19775-1:2023](https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/particleSystems.html)
 - [X_ITE ParticleSystem node](https://create3000.github.io/x_ite/components/particlesystems/particlesystem/)
+- [X3D export and import tools](https://www.web3d.org/x3d/export-import)
+- [Using Blender with X3D](https://www.web3d.org/blog/anitahavele/using-blender-x3d-comprehensive-guide)
+- [Castle Game Engine planned features](https://castle-engine.io/planned_features.php)
+- [X3D standards progress — language bindings](https://www.web3d.org/x3d/progress)
+- [X3DJSAIL (Java)](https://www.web3d.org/specifications/java/X3DJSAIL.html) and [X3DPSAIL (Python)](https://www.web3d.org/x3d/stylesheets/python/python.html)
 - [UsdGeomPointInstancer](https://openusd.org/docs/api/class_usd_geom_point_instancer.html)
 - [AOUSD — What are OpenUSD schemas?](https://aousd.org/blog/explainer-series-for-developers-what-are-openusd-schemas/)
 - [Generating new schema classes (codeless schemas)](https://openusd.org/release/tut_generating_new_schema.html)
@@ -403,7 +443,10 @@ So the survey's practical consequences are narrower than its conclusions:
   most of what a schema generator would need.
 - **If a preview is ever wanted**, X3D is the target, one-way, generated from the same
   neutral description rather than from the NIF. §7.1's table is the mapping; the losses
-  in it are acceptable for looking at something and not for storing it.
+  in it are acceptable for looking at something and not for storing it. The audience is
+  a browser runtime such as X_ITE, not a DCC suite, since no authoring tool implements
+  the component — and writing the file needs `System.Xml.Linq` and no dependency, since
+  X3D is XML and no C# binding exists to wait for.
 - **Do not bake.** Both `FbxCache` (§6.1) and Alembic (§7.4) want a simulation, and a
   NIF contains none. Producing one means reimplementing Gamebryo's particle engine, and
   the result would be one-way even then.
