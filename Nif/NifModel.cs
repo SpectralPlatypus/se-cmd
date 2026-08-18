@@ -481,22 +481,24 @@ namespace SECmd.Nif
 
             if (target is not null)
             {
+                // A sibling *array* means the element lining up with this one: the
+                // n-th strip's length is the n-th entry of Strip Lengths. This has to
+                // be tested before the value below, because an array item carries no
+                // value of its own and an unset value reads as a count of zero --
+                // which silently made every ragged row empty.
+                if (target.IsArray)
+                {
+                    if (scope is not null && target.Child(scope.Row) is { IsCount: true } peer)
+                        return peer.Value.ToUInt64();
+
+                    return 0;
+                }
+
                 if (target.IsCount || target.IsFloat)
                     return target.Value.ToUInt64();
 
                 if (target.IsFileVersion)
                     return target.Value.ToUInt();
-
-                // The name refers to a sibling *array*, so take the element that
-                // lines up with this one. Strip lengths are described this way: the
-                // n-th strip's length is the n-th entry of Strip Lengths.
-                if (target.HasChildren && scope is not null)
-                {
-                    NifItem? peer = target.Child(scope.Row);
-
-                    if (peer is not null && peer.IsCount)
-                        return peer.Value.ToUInt64();
-                }
 
                 return 0;
             }
