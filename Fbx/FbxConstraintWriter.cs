@@ -31,6 +31,9 @@ namespace SECmd.Fbx
         /// <summary>The property naming which kind of constraint this was.</summary>
         public const string TypeProperty = "constraint_type";
 
+        /// <summary>The property naming the block wrapping the descriptor, if any.</summary>
+        public const string WrapperProperty = "constraint_wrapper";
+
         /// <summary>Prefix on every property carrying a descriptor field.</summary>
         public const string FieldPrefix = "hkc_";
 
@@ -57,8 +60,8 @@ namespace SECmd.Fbx
             FbxScene scene, NifModel model, NifItem constraint,
             IReadOnlyDictionary<NifItem, (FbxObject Node, string Name)> bodies)
         {
-            NifItem? wrapper = WrapperOf(model, constraint);
-            NifItem descriptor = DescriptorOf(model, constraint) ?? constraint;
+            NifItem? wrapper = model.ConstraintWrapper(constraint);
+            NifItem descriptor = model.ConstraintDescriptor(constraint);
 
             (NifItem? entityA, NifItem? entityB) = EntitiesOf(model, constraint);
 
@@ -85,6 +88,12 @@ namespace SECmd.Fbx
 
             node.Properties.SetUserString(TypeProperty, TypeNameOf(model, constraint, descriptor));
 
+            // A wrapped constraint's type property names the descriptor inside it,
+            // which is what HKXWrangler expects to read. The wrapper is a separate
+            // block and would otherwise be lost, so it is recorded beside it.
+            if (wrapper is not null)
+                node.Properties.SetUserString(WrapperProperty, constraint.Name);
+
             WriteFields(model, descriptor, node, string.Empty);
 
             // The wrapper's own settings sit outside the descriptor: how much force
@@ -94,29 +103,6 @@ namespace SECmd.Fbx
                 WriteFields(model, constraint, node, string.Empty, skip: wrapper);
 
             return node;
-        }
-
-        /// <summary>The union holding a wrapped constraint's parameters, if it has one.</summary>
-        /// <remarks>
-        /// A constraint block names its type one of two ways. Most are a class per
-        /// type with the descriptor inline; the wrapped ones — breakable, malleable
-        /// — carry a type number and a union, of which exactly one arm is live.
-        /// </remarks>
-        private static NifItem? WrapperOf(NifModel model, NifItem constraint) =>
-            model.FindItem(constraint, "Constraint Data") ?? model.FindItem(constraint, "Constraint");
-
-        /// <summary>The sub-item holding the constraint's parameters.</summary>
-        public static NifItem? DescriptorOf(NifModel model, NifItem constraint)
-        {
-            if (WrapperOf(model, constraint) is not { } wrapped)
-                return null;
-
-            // A union arm is picked out by its condition, so the live one is the
-            // only compound child whose condition holds.
-            NifItem? arm = wrapped.Children.FirstOrDefault(
-                c => c.Children.Count > 0 && c.Name != "Constraint Info" && model.EvalCondition(c));
-
-            return arm ?? wrapped;
         }
 
         /// <summary>The two rigid bodies a constraint joins.</summary>
@@ -216,10 +202,10 @@ namespace SECmd.Fbx
 
                 // The entity links are the joint's two ends, already expressed by
                 // where the node sits in the hierarchy.
-                if (child.Name is "Entity A" or "Entity B" or "Constraint Info" or "Chained Entities")
+                if (NifConstraintAccess.IsEntityField(child.Name))
                     continue;
 
-                string name = $"{prefix}{child.Name.Replace(' ', '_').ToLowerInvariant()}";
+                string name = NifConstraintAccess.FieldKey(prefix, child.Name);
 
                 if (child.IsArray)
                 {
