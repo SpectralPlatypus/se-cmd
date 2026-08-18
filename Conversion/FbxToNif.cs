@@ -1115,12 +1115,66 @@ namespace SECmd.Conversion
             SetFloat(shader, "Alpha", (float)(1.0 - properties.GetDouble("TransparencyFactor")));
             SetFloat(shader, "Environment Map Scale", (float)properties.GetDouble("environment_map_scale"));
 
+            ReadUvTransform(shader, material);
+
             NifItem textureSet = BuildTextureSet(material);
             _model.SetRef(shader, "Texture Set", textureSet);
 
             _model.SetRef(shape, "Shader Property", shader);
 
             BuildAlphaProperty(shape, properties);
+        }
+
+        /// <summary>
+        /// Recovers the shader's UV offset and scale from the material's textures.
+        /// </summary>
+        /// <remarks>
+        /// FBX carries these per texture, as <c>ModelUVTranslation</c> and
+        /// <c>ModelUVScaling</c>, while a NIF shader has one pair for all of its
+        /// slots. The first texture that names them wins, which is the same pair the
+        /// export wrote onto every slot.
+        ///
+        /// The default matters more than it looks. A shader is authored with an
+        /// identity scale of one, not zero, and a zero here does not fail loudly --
+        /// it multiplies every texture coordinate in the mesh to nothing.
+        /// </remarks>
+        private void ReadUvTransform(NifItem shader, FbxObject material)
+        {
+            var offset = new NifVector2(0f, 0f);
+            var scale = new NifVector2(1f, 1f);
+
+            foreach ((FbxObject texture, _) in _scene.PropertyConnectionsTo(material.Id))
+            {
+                if (Pair(texture, "ModelUVTranslation") is { } t)
+                    offset = t;
+
+                if (Pair(texture, "ModelUVScaling") is { } s)
+                {
+                    scale = s;
+                    break;
+                }
+            }
+
+            _model.FindItem(shader, "UV Offset")?.Value.Set(offset);
+            _model.FindItem(shader, "UV Scale")?.Value.Set(scale);
+        }
+
+        /// <summary>Reads a two-double FBX record, if it is there and well formed.</summary>
+        private static NifVector2? Pair(FbxObject texture, string name)
+        {
+            if (texture.Child(name) is not { } node || node.Properties.Count < 2)
+                return null;
+
+            try
+            {
+                return new NifVector2(
+                    System.Convert.ToSingle(node.Properties[0]),
+                    System.Convert.ToSingle(node.Properties[1]));
+            }
+            catch (Exception e) when (e is InvalidCastException or FormatException)
+            {
+                return null;
+            }
         }
 
         private NifItem BuildTextureSet(FbxObject material)
