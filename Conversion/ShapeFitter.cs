@@ -127,9 +127,21 @@ namespace SECmd.Conversion
         /// <c>bhkConvexVerticesShape</c> stores.
         /// </summary>
         /// <remarks>
-        /// Each plane is a unit normal plus its distance from the origin, packed
-        /// into the fourth component. Havok needs the planes as well as the points:
-        /// it does not derive them.
+        /// Each plane is a unit normal plus a distance packed into the fourth
+        /// component. Havok needs the planes as well as the points: it does not
+        /// derive them.
+        ///
+        /// nif.xml states the convention exactly, and it is not the obvious one: the
+        /// normal points to the *exterior*, and the fourth component is **minus** the
+        /// dot product of the normal with any vertex on the plane. So a face at
+        /// x = +r with normal (1,0,0) stores -r, not +r.
+        ///
+        /// Getting that sign wrong does not make the shape wrong in a way anything
+        /// shows. The planes still sit in the right places; what inverts is which side
+        /// of them counts as inside, and Havok tests containment with n.x + d &lt;= 0.
+        /// A hull built with the sign flipped is inside out -- solid everywhere except
+        /// where the object is. A symmetric shape such as a box hides it completely,
+        /// because negating every distance maps the plane set onto itself.
         /// </remarks>
         public static (List<NifVector4> Vertices, List<NifVector4> Planes) FitConvex(IReadOnlyList<NifVector3> points)
         {
@@ -166,7 +178,8 @@ namespace SECmd.Conversion
                 ny /= length;
                 nz /= length;
 
-                float distance = nx * a.X + ny * a.Y + nz * a.Z;
+                // Minus the dot product, per the format: see the note above.
+                float distance = -(nx * a.X + ny * a.Y + nz * a.Z);
 
                 // Coplanar faces share a plane; storing each one would bloat the
                 // shape without changing it.

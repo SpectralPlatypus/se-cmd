@@ -86,15 +86,12 @@ namespace SECmd.Tests
             ["Shader Flags 2"] = "one flag differs; the shader flag words are not carried verbatim",
             ["Bounding Sphere"] = "recomputed rather than carried",
             ["Center"] = "recomputed rather than carried",
-            ["Vertices"] = "convex hull refitted from the tessellation, so the vertices come back in another order",
-
-            // Suspected bug rather than a benign difference. Havok's plane equations
-            // are n.x + d = 0, so an outward normal takes a negative d, and that is
-            // what ck-cmd writes because it copies getPlaneEquations() verbatim. The
-            // hulls rebuilt here come back with d positive throughout, which is the
-            // same set of planes for a symmetric shape like a box and the inside-out
-            // shape for anything else. Needs a non-symmetric hull to pin down.
-            ["Normals"] = "convex hull plane distances look sign-inverted against Havok's n.x + d = 0",
+            // The hull is refitted, so its vertices and planes come back in the order
+            // the fit produced rather than the order Havok emitted. The values agree:
+            // the plane convention is checked directly, against a shipped hull, in
+            // ConvexHullPlaneTests.
+            ["Vertices"] = "convex hull refitted from the tessellation, so the order differs",
+            ["Normals"] = "convex hull refitted from the tessellation, so the order differs",
         };
 
         public static TheoryData<string> CkCmdExamples() =>
