@@ -1217,9 +1217,32 @@ namespace SECmd.Nif
             NifItem? numBlocks = FindItem(_header, "Num Blocks");
             numBlocks?.Value.SetCount((uint)_blocks.Count);
 
-            // Distinct block types, in first-use order.
+            // Distinct block types. Any order the header already has is kept, and
+            // only the types it does not name are appended, in first-use order.
+            //
+            // First-use is what Bethesda's exporter produces -- of 2,500 vanilla
+            // Skyrim meshes, all 2,500 are ordered that way -- so a model built from
+            // scratch comes out the way the game's own files do. But a file written
+            // by some other tool may order its table differently, and rewriting it
+            // would change bytes that carry no meaning. Re-saving a file should
+            // change what was edited and nothing else.
             var types = new List<string>();
             var typeIndices = new List<int>();
+
+            var present = new HashSet<string>(_blocks.Select(b => b.Name), StringComparer.Ordinal);
+
+            if (FindItem(_header, "Block Types") is { } existing)
+            {
+                foreach (NifItem entry in existing.Children)
+                {
+                    string name = entry.Value.AsString();
+
+                    // A type the file names but no longer uses is dropped: the table
+                    // describes the blocks, and a stale entry would outlive them.
+                    if (name.Length > 0 && present.Contains(name) && !types.Contains(name))
+                        types.Add(name);
+                }
+            }
 
             foreach (NifItem block in _blocks)
             {
