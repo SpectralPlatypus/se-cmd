@@ -385,29 +385,40 @@ target only because it is the pipeline se-cmd already speaks.
 
 ## 8. Where se-cmd stands
 
-se-cmd implements **B** (`Fbx/FbxParticleWriter.cs`, `Nif/NifParticleWriter.cs`): the
+se-cmd implements **C** (`Fbx/FbxParticleWriter.cs`, `Nif/NifParticleWriter.cs`): the
 system block, its data block and its modifier stack in order, as prefixed string
-properties on the node that already stands for the system. The node keeps its name,
-transform and animation; no geometry is invented for it. Everything in §2.2 and §3
-survives a round trip except the links.
+properties on the node that already stands for the system, **plus the links**. The node
+keeps its name, transform and animation; no geometry is invented for it. Everything in
+§2.2 and §3 survives a round trip.
 
-### 8.1 The remaining gap
+### 8.1 How the links are carried
 
-§3.1. Three of the fixture's links are dropped, two of them to named nodes that exist
-in the exported scene as FBX Models:
+By the name of what they point at, under the field's own key plus `_ref`:
 
 ```
-NiPSysCylinderEmitter.Emitter Object -> NiNode "PCloud06-Emitter"
-NiPSysGravityModifier.Gravity Object -> NiNode "Gravity01"
-NiPSysAgeDeathModifier.Spawn Modifier -> NiPSysSpawnModifier "NiPSysSpawnModifier:1"
+npsm_2_emitter_object_ref = "PCloud06-Emitter"
+npsm_8_gravity_object_ref = "Gravity01"
+npsm_0_spawn_modifier_ref = "NiPSysSpawnModifier:1"
 ```
 
-**C is the improvement worth making**, and it is small: an object-to-object connection
-from the system's node to the target, labelled by the field it stands for. FBX carries
-it natively, it survives renaming and reparenting in a DCC tool in a way a stored name
-would not, and it removes the one class of silent loss left. The intra-stack link
-(`Spawn Modifier`) needs no connection at all — the modifier's own `Name` identifies it,
-exactly as a controller's `Modifier Name` does (§4).
+A property rather than the object-to-object connection this section first proposed. A
+connection is the more native mechanism and survives renaming, but resolving by name is
+what the rest of this project already does — skin bones, animation targets, constraint
+entities — and a particle system is not the place to introduce a second convention. It
+is also what a NIF itself does one level up: a controller finds its modifier by
+`Modifier Name` (§4), not by reference.
+
+Resolution takes two passes, because the links are not all resolvable at once. One
+naming a modifier of the same system is wired the moment the stack exists; one naming a
+node has to wait for the whole tree, since an emitter object may be a sibling the walk
+has not reached. That is the same deferral skins and animation already use.
+
+Three links are deliberately **not** named: the system's `Data`, its `Modifiers` array,
+and each modifier's `Target` back-pointer. All three follow from the structure being
+rebuilt, and naming them as well would give two sources for one fact.
+
+A name that resolves to nothing is reported. Silence would mean an emitter emitting
+from the origin, or gravity pulling towards it, with nothing in the file to say why.
 
 **D is better ergonomics for the same information.** A `Null` per modifier would put the
 stack in the outliner where a rigger could see and reorder it, and would shorten the
@@ -435,7 +446,7 @@ survives in the FBX intact.
 
 So the survey's practical consequences are narrower than its conclusions:
 
-- **Do C.** The dropped links are a real loss, and FBX carries them natively (§6).
+- **C is done** (§8.1). The dropped links were the last real loss.
 - **If a USD path is ever added** for other reasons, the particle system should move to
   a codeless custom schema rather than being re-encoded as strings. §7.2's argument is
   that the same information becomes typed and validated for no extra work, and the
