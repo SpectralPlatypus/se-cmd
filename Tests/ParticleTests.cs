@@ -40,8 +40,21 @@ namespace SECmd.Tests
             return (converter.Convert(Db), converter.Warnings);
         }
 
+        private static FbxScene Scene() => new(Export());
+
         private static FbxObject Node() =>
-            new FbxScene(Export()).OfClass("Model").First(o => o.Name == "PCloud06");
+            Scene().OfClass("Model").First(o => o.Name == "PCloud06");
+
+        /// <summary>The modifier nodes under the system, in stack order.</summary>
+        private static List<FbxObject> ModifierNodes()
+        {
+            FbxScene scene = Scene();
+
+            return scene
+                .ChildrenOf(scene.OfClass("Model").First(o => o.Name == "PCloud06").Id)
+                .Where(FbxParticleWriter.IsModifierNode)
+                .ToList();
+        }
 
         // --- exporting ---------------------------------------------------------
 
@@ -64,7 +77,10 @@ namespace SECmd.Tests
 
             Assert.Equal("NiParticleSystem", node.Properties.GetString(FbxParticleWriter.TypeProperty));
             Assert.Equal("NiPSysData", node.Properties.GetString(FbxParticleWriter.DataTypeProperty));
-            Assert.Equal("11", node.Properties.GetString(FbxParticleWriter.ModifierCountProperty));
+
+            // The stack is a subtree, not a property list: eleven empties under the
+            // system, in the order they run in.
+            Assert.Equal(11, ModifierNodes().Count);
         }
 
         [Fact]
@@ -84,16 +100,12 @@ namespace SECmd.Tests
         {
             FbxObject node = Node();
 
-            string[] prefixes =
-            [
-                FbxParticleWriter.SystemPrefix,
-                FbxParticleWriter.DataPrefix,
-                FbxParticleWriter.ModifierPrefix
-            ];
+            string[] prefixes = [FbxParticleWriter.SystemPrefix, FbxParticleWriter.DataPrefix];
 
             var fields = node.Properties.All
                 .Select(p => p.Name)
                 .Where(n => prefixes.Any(p => n.StartsWith(p, StringComparison.Ordinal)))
+                .Concat(ModifierNodes().SelectMany(m => m.Properties.All.Select(p => p.Name)))
                 .ToList();
 
             Assert.NotEmpty(fields);
@@ -112,20 +124,63 @@ namespace SECmd.Tests
         [Fact]
         public void LinksAreCarriedByTheNameOfWhatTheyPointedAt()
         {
-            FbxObject node = Node();
+            var nodes = ModifierNodes();
 
-            var refs = node.Properties.All
-                .Select(p => p.Name)
+            var refs = nodes
+                .SelectMany(m => m.Properties.All.Select(p => p.Name))
                 .Where(n => n.EndsWith(FbxParticleWriter.LinkSuffix, StringComparison.Ordinal))
                 .ToList();
 
             // Exactly the three the fixture has: an emitter's node, a gravity
-            // modifier's node, and one modifier naming another.
+            // modifier's node, and one modifier naming another. Each sits on the
+            // modifier it belongs to rather than on the system.
             Assert.Equal(3, refs.Count);
 
-            Assert.Equal("PCloud06-Emitter", node.Properties.GetString("npsm_2_emitter_object_ref"));
-            Assert.Equal("Gravity01", node.Properties.GetString("npsm_8_gravity_object_ref"));
-            Assert.Equal("NiPSysSpawnModifier:1", node.Properties.GetString("npsm_0_spawn_modifier_ref"));
+            Assert.Equal(
+                "PCloud06-Emitter",
+                nodes[2].Properties.GetString($"emitter_object{FbxParticleWriter.LinkSuffix}"));
+
+            Assert.Equal(
+                "Gravity01",
+                nodes[8].Properties.GetString($"gravity_object{FbxParticleWriter.LinkSuffix}"));
+
+            Assert.Equal(
+                "NiPSysSpawnModifier:1",
+                nodes[0].Properties.GetString($"spawn_modifier{FbxParticleWriter.LinkSuffix}"));
+        }
+
+        [Fact]
+        public void ModifierNodesAreNamedAndTypedIndividually()
+        {
+            NifModel source = Load();
+
+            var expected = source
+                .GetRefArray(source.Blocks.First(b => b.Name == "NiParticleSystem"), "Modifiers")
+                .Select(m => (m.Name, source.GetString(m, "Name")))
+                .ToList();
+
+            var actual = ModifierNodes()
+                .Select(n => (
+                    n.Properties.GetString(FbxParticleWriter.ModifierTypeProperty),
+                    n.Properties.GetString(FbxParticleWriter.ModifierNameProperty)))
+                .ToList();
+
+            // A rigger opening the outliner sees the stack by name, and each node
+                // says what it is.
+            Assert.Equal(expected, actual);
+        }
+
+        [Fact]
+        public void ModifierFieldsAreNamedAsTheFileNamesThem()
+        {
+            FbxObject subTex = ModifierNodes().First(
+                n => n.Properties.GetString(FbxParticleWriter.ModifierTypeProperty) == "BSPSysSubTexModifier");
+
+            // The node is the modifier, so there is nothing to disambiguate it from:
+            // frame_count rather than npsm_7_frame_count.
+            Assert.True(subTex.Properties.Contains("frame_count"));
+            Assert.True(subTex.Properties.Contains("start_frame"));
+            Assert.DoesNotContain(subTex.Properties.All, p => p.Name.StartsWith("npsm_", StringComparison.Ordinal));
         }
 
         [Fact]
@@ -246,10 +301,13 @@ namespace SECmd.Tests
             scene.Connect(node, root);
 
             node.Properties.SetUserString(FbxParticleWriter.TypeProperty, "NiParticleSystem");
-            node.Properties.SetUserString(FbxParticleWriter.ModifierCountProperty, "1");
-            node.Properties.SetUserString($"{FbxParticleWriter.ModifierPrefix}0_type", "NiPSysGravityModifier");
-            node.Properties.SetUserString($"{FbxParticleWriter.ModifierPrefix}0_name", "grav");
-            node.Properties.SetUserString($"{FbxParticleWriter.ModifierPrefix}0_gravity_object_ref", "Nowhere");
+
+            FbxObject modifier = FbxMeshWriter.AddModel(scene, "grav", "Null", NifTransform.Identity);
+            scene.Connect(modifier, node);
+
+            modifier.Properties.SetUserString(FbxParticleWriter.ModifierTypeProperty, "NiPSysGravityModifier");
+            modifier.Properties.SetUserString(FbxParticleWriter.ModifierNameProperty, "grav");
+            modifier.Properties.SetUserString($"gravity_object{FbxParticleWriter.LinkSuffix}", "Nowhere");
             scene.Flush();
 
             var converter = new FbxToNif(new FbxScene(document), new FbxToNifOptions { RootName = "test" });
