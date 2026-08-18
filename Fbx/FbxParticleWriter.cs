@@ -45,6 +45,14 @@ namespace SECmd.Fbx
         /// </remarks>
         public const string ModifierNameProperty = "particle_modifier_name";
 
+        /// <summary>The property naming a collider node's block type.</summary>
+        /// <remarks>
+        /// A collider manager holds a chain of colliders, each its own block. They
+        /// hang under the manager for the same reason the modifiers hang under the
+        /// system: the chain is a list, and a list is a thing a tree can show.
+        /// </remarks>
+        public const string ColliderTypeProperty = "particle_collider";
+
         /// <summary>Prefix on the system block's own fields.</summary>
         public const string SystemPrefix = "nps_";
 
@@ -88,7 +96,11 @@ namespace SECmd.Fbx
         /// </remarks>
         private static readonly HashSet<string> StructuralLinks = new(StringComparer.Ordinal)
         {
-            "Data", "Modifiers", "Target"
+            "Data", "Modifiers", "Target",
+
+            // A collider's place in its chain and the manager it belongs to, both of
+            // which the tree says already.
+            "Collider", "Next Collider", "Parent"
         };
 
         /// <summary>Whether a block is a particle system this carries.</summary>
@@ -131,6 +143,10 @@ namespace SECmd.Fbx
         public static bool IsModifierNode(FbxObject node) =>
             node.Properties.GetString(ModifierTypeProperty).Length > 0;
 
+        /// <summary>Whether a node stands for one collider of a chain.</summary>
+        public static bool IsColliderNode(FbxObject node) =>
+            node.Properties.GetString(ColliderTypeProperty).Length > 0;
+
         private static void AddModifier(
             FbxScene scene, FbxObject parent, NifModel model, NifItem modifier)
         {
@@ -150,6 +166,35 @@ namespace SECmd.Fbx
             // No prefix: the node is the modifier, so there is nothing to
             // disambiguate it from.
             Write(node, model, modifier, string.Empty);
+
+            AddColliders(scene, node, model, modifier);
+        }
+
+        /// <summary>Writes a collider manager's chain as children of its node.</summary>
+        /// <remarks>
+        /// Sibling order is chain order, as it is for the modifiers, so
+        /// <c>Next Collider</c> is not carried: the tree says it.
+        /// </remarks>
+        private static void AddColliders(
+            FbxScene scene, FbxObject parent, NifModel model, NifItem modifier)
+        {
+            int index = 0;
+
+            for (NifItem? collider = model.GetRef(modifier, "Collider");
+                 collider is not null;
+                 collider = model.GetRef(collider, "Next Collider"))
+            {
+                // Colliders have no name of their own, so one is made from the type
+                // and the position, which is all there is to tell them apart by.
+                FbxObject node = FbxMeshWriter.AddModel(
+                    scene, $"{collider.Name}_{index}", "Null", NifTransform.Identity);
+
+                scene.Connect(node, parent);
+                node.Properties.SetUserString(ColliderTypeProperty, collider.Name);
+
+                Write(node, model, collider, string.Empty);
+                index++;
+            }
         }
 
         private static void Write(FbxObject node, NifModel model, NifItem block, string prefix)

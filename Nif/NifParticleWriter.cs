@@ -136,6 +136,8 @@ namespace SECmd.Nif
                 Read(model, modifier, Fields(child), string.Empty, links);
 
                 model.SetRef(modifier, "Target", system);
+                BuildColliders(model, scene, child, modifier, name, warnings, links);
+
                 built.Add(modifier);
 
                 if (modifierName.Length > 0)
@@ -149,6 +151,48 @@ namespace SECmd.Nif
             }
 
             return byName;
+        }
+
+        /// <summary>
+        /// Rebuilds a collider manager's chain from the nodes under it.
+        /// </summary>
+        /// <remarks>
+        /// Sibling order is chain order, so each collider is linked to the next and
+        /// every one points back at the manager. A chain that lost its links is a set
+        /// of colliders the manager never reaches.
+        /// </remarks>
+        private static void BuildColliders(
+            NifModel model, FbxScene scene, FbxObject node, NifItem modifier,
+            string name, List<string> warnings,
+            List<(NifItem Link, string TargetName)> links)
+        {
+            NifItem? previous = null;
+
+            foreach (FbxObject child in scene.ChildrenOf(node.Id))
+            {
+                if (child.Class != "Model" || !FbxParticleWriter.IsColliderNode(child))
+                    continue;
+
+                string type = child.Properties.GetString(FbxParticleWriter.ColliderTypeProperty);
+
+                if (!model.KnowsBlock(type))
+                {
+                    warnings.Add($"{name}: unknown particle collider \"{type}\", it is dropped");
+                    continue;
+                }
+
+                NifItem collider = model.InsertBlock(type);
+
+                Read(model, collider, Fields(child), string.Empty, links);
+                model.SetRef(collider, "Parent", modifier);
+
+                if (previous is null)
+                    model.SetRef(modifier, "Collider", collider);
+                else
+                    model.SetRef(previous, "Next Collider", collider);
+
+                previous = collider;
+            }
         }
 
         private static void Read(
