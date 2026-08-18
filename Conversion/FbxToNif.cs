@@ -729,6 +729,14 @@ namespace SECmd.Conversion
 
             BuildMaterial(shape, holder);
 
+            // After the material, since a flipbook controller joins the shader
+            // property's chain and the shader property is what the material builds.
+            if (NifFlipWriter.HasFlipControllers(holder))
+            {
+                _model.WriteFlipControllers(
+                    holder, shape, _model.GetRef(shape, "Shader Property") ?? shape, Warnings);
+            }
+
             // Deferred: the bones are nodes elsewhere in the scene and may not have
             // been converted yet, so skins are wired up once the whole tree is
             // built.

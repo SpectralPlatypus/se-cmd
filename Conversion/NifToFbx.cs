@@ -590,6 +590,10 @@ namespace SECmd.Conversion
                 FbxMeshWriter.AddSingleMaterialElement(geometry);
             }
 
+            // A flipbook controller hangs off a property rather than off the shape,
+            // but the node is what an importer has to put it back on.
+            FbxFlipWriter.AddFlipControllers(holder, _model, shape);
+
             _built[shape] = holder;
 
             // The holder is the node with the transform, so it is what an animation
