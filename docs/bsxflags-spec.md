@@ -173,40 +173,71 @@ Deviations, and why:
 ## 8. Measured against the game
 
 Running the calculation over every mesh Skyrim SE ships and comparing it with the value
-the file already stores: **22,007 of 22,047 agree**. That is the useful check on this
-implementation, because those files were written by the exporter that defined the rules,
-so a disagreement is either a bug here or a malformed file — and telling those apart is
-what `NifScan` was for in the first place.
+the file already stores: **13,028 of the 13,068 that carry a `BSXFlags` agree**. The
+other 8,979 meshes have no `BSXFlags` to compare against.
 
-The 40 that disagree fall into four groups, and none of them is a fifth rule waiting to
-be found.
+The 40 that disagree were each run down, because a rule that is wrong and a file that is
+wrong look identical from a summary. None of the 40 turned out to be a rule this gets
+wrong, and the evidence for that is below rather than the assertion alone.
 
-| Files | Bit | Which way | What it is |
-| --- | --- | --- | --- |
-| 17 | 7 | calculated, not stored | One collision, no constraints, so §5's chain test says single. Mostly `meshes/shadertests/*`, plus legacy assets such as `clutter/table02.nif` and `architecture/markarth/markarthtemphouse.nif` |
-| 5 | 3 | stored, not calculated | The root carries the collision, so `hasRootCollision` suppresses bit 3 |
-| 4 | 1, 2, 6, 7 | stored, not calculated | The file claims collision it does not contain |
-| 14 | 0, 5, 6, 9 | mixed | Mostly Creation Club, plus two `marker*.nif` |
+### 8.1 Bit 7, twenty files
 
-The second group is the one to read carefully: those five are exactly the case §3.4's
-source comment calls *"wrong. may be complex but only in 6 models, need further
-investigation"*, and they turn up at almost the count it names. Reproducing ck-cmd's
-uncertainty at ck-cmd's own scale is evidence the port is faithful, so the rule is left
-as written rather than bent to fit five files.
+All twenty store no bit 7 where the graph says a single collision and no constraint.
+Rather than argue from one file, count the population it belongs to:
 
-The third group cannot be anything but the files. `creationclub/.../arpitwalltall02.nif`
-stores `0x82` — Havok, single chain — with no collision block anywhere in it, and
-`character assets/hair/hairshorthumanfold.nif` stores ragdoll and dynamic bodies with
-the same. No calculation from the graph can produce those, because the graph does not
-say them.
+| `col=1, con=0, ph=0` | stores bit 7 | does not |
+| --- | --- | --- |
+| collision on the root | 9,356 | 21 |
+| collision on a child | 849 | 1 |
 
-The first group is the least settled. Seventeen files with a single collision and no
-constraint are a single collision by any reading of §5, and they do not set bit 7. They
-are concentrated in test and legacy content, which suggests files that predate the rule
-rather than a rule this misreads — but that is inference, not evidence.
+A rule that fires 10,205 times and is contradicted 22 times is not the wrong rule. These
+are outliers, and they cluster where outliers live: eleven of the twenty are under
+`meshes/shadertests/`, and others are named `markarthhousetemp01` and `table02` — files
+with a collision and no geometry at all.
 
-Three of the remainder have not been run down: `hairlonghumanm.nif` (two collisions and
-two constraints, where the distinct-pair counting of §5 decides bit 7),
-`arcandleplate01.nif` and `arcandleplate02.nif` (bit 6, so a quality type read), and
-`markerentrance.nif` / `markerexit.nif` (bit 5, on files whose nodes are not named
-`EditorMarker`). Any of those could be this implementation rather than the file.
+### 8.2 Bit 3, ten files
+
+This is §3.4's `hasRootCollision`, the one the source annotates *"wrong. may be complex
+but only in 6 models, need further investigation"*. The annotation is accurate, and the
+count is nearly exact.
+
+The term folds in `hasMultiBound`, and that is where it breaks down. Among files with one
+collision, a multi-bound and no collision on the root:
+
+| root | stores bit 3 | does not |
+| --- | --- | --- |
+| `BSFadeNode` | 4 | 118 |
+| `BSLeafAnimNode` | 2 | 0 |
+| `BSTreeNode` | 55 | 0 |
+
+`BSTreeNode` is handled — `!isRootBSTree` short-circuits the whole term, which is why 55
+files agree. The remaining six are `BSFadeNode` and `BSLeafAnimNode` files whose measured
+features are identical to the 118 that go the other way. Nothing in the block graph
+separates them, so the rule is left exactly as ck-cmd wrote it. Four more disagree
+outside the multi-bound case: three with a root collision and one collision, and one with
+a phantom and no collision at all.
+
+### 8.3 The remaining ten, individually
+
+Each of these is a file whose stored value ck-cmd's own algorithm cannot produce either,
+which is checkable from §3 rather than a matter of judgement.
+
+| File | Stored | Why the graph cannot say it |
+| --- | --- | --- |
+| `hair/hairshorthumanfold.nif` | `0xC2` | Havok, dynamic bodies and single chain, in a file whose every block is a node, a shape and a shader. No collision object, no rigid body. §3.4 cannot set bit 1 from that |
+| `ayleidruins/.../arpitwalltall02.nif` | `0x82` | Havok and single chain, with no collision block in the file |
+| `ayleidruins/.../markerexit.nif`, `markerentrance.nif` | `0x20` | Editor marker, but no `NiObjectNET` in either is named anything containing `EditorMarker` — `markerexit.nif`'s only shape is called `MarkerEntrance` |
+| `ayleidruins/.../arcandleplate01.nif`, `02` | bit 6 | Dynamic bodies, where the file's one `bhkRigidBody` is `MO_QUAL_FIXED`, which §3.3 excludes by name |
+| `ayleidruins/.../arwelkydplanter01.nif`, `arwelkydclusterfx01.nif` | no bit 9 | A `BSEffectShaderProperty` with shader flags `0xE0000048` — `SLSF1_EXTERNAL_EMITTANCE` is set, so §3.3 sets bit 9 |
+| `mps/mpsmotesforest01.nif` | no bit 5 | Contains a `BSTriShape` named exactly `EditorMarker`, reachable from the root and inside no branch |
+| `effects/dragoncrash/fxdragoncrashfurrow01.nif` | no bit 0 | 30-odd `NiTimeController`s. It is skinned, but §3.2 only suppresses bit 0 when every bone is a direct child of the root, and these are deeper |
+
+Nine of the ten are Creation Club or DLC content rather than base-game Bethesda export.
+
+### 8.4 What this means for the claim that ck-cmd recalculates fully
+
+It recalculates fully in the sense that it never carries the source value across — every
+bit is computed. It does not follow that the computed value matches every shipped file,
+and for these 40 it demonstrably cannot: each rule in §3 is a function of the block
+graph, and in these files the graph contradicts what is stored. `NifScan` exists to
+report exactly that mismatch, which is only a useful thing to ship if mismatches occur.

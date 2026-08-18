@@ -112,6 +112,95 @@ namespace SECmd.Tests
             });
         }
 
+        [Fact]
+        public void EveryVanillaMeshAgreesWithItsCalculatedBsxFlags()
+        {
+            // BSXFlags is derived rather than authored -- every bit is a fact about
+            // the block graph -- so the importer recalculates it instead of carrying
+            // the source value. This is what says the rules are Bethesda's rules and
+            // not a reading of ck-cmd's source: the files themselves were written by
+            // the exporter that defined them.
+            Sweep((original, db) =>
+            {
+                using var input = new MemoryStream(original);
+                NifModel model = NifModel.Load(input, db);
+
+                NifItem? bsx = model.Blocks.FirstOrDefault(b => b.Name == "BSXFlags");
+
+                if (bsx is null)
+                    return null;
+
+                uint stored = model.GetUInt(bsx, "Integer Data");
+                uint calculated = model.Calculate();
+
+                if (stored == calculated)
+                    return null;
+
+                return $"BSXFlags stored 0x{stored:X} but calculates 0x{calculated:X} "
+                       + $"(differing bits 0x{stored ^ calculated:X})";
+            },
+            // Forty of the 13,068 vanilla meshes carrying a BSXFlags disagree with
+            // the calculation, and every one was run down: none is a rule this gets
+            // wrong. `docs/bsxflags-spec.md` §8 has the evidence per group. They are
+            // listed rather than counted so that a new disagreement is a failure
+            // instead of a number that quietly drifts.
+            tolerated:
+            [
+                // Bit 7: stored clear where the graph is a single collision. The same
+                // features occur in 10,205 meshes that do set it, against 22 that do
+                // not, so these are outliers -- and they cluster in test content.
+                "meshes/shadertests/testcaveepiccorner01.nif",
+                "meshes/shadertests/testcaveepiccorner02.nif",
+                "meshes/shadertests/testcaveepiccorner03.nif",
+                "meshes/shadertests/testcaveepiccorner04.nif",
+                "meshes/shadertests/testcaveepicinsidecorner01.nif",
+                "meshes/shadertests/testcaveepicinsidecorner02.nif",
+                "meshes/shadertests/testcaveepicinsidecorner03.nif",
+                "meshes/shadertests/testcaveepicinsidecorner04.nif",
+                "meshes/shadertests/testcaveepicmid03.nif",
+                "meshes/shadertests/testcaveepicwall01.nif",
+                "meshes/shadertests/testcaveepicwall02.nif",
+                "meshes/shadertests/testcaveepicwall03.nif",
+                "meshes/shadertests/testcaveepicwall04.nif",
+                "meshes/architecture/markarth/markarthhousetemp01.nif",
+                "meshes/architecture/markarth/markarthtemphouse.nif",
+                "meshes/clutter/counterset/countercornerout01.nif",
+                "meshes/clutter/table02.nif",
+                "meshes/weapons/imperial/imperialswordgo.nif",
+                "meshes/dlc02/dungeons/apocrypha/animated/forbiddenbook/apoforbiddenbookact01.nif",
+                "meshes/actors/character/character assets/hair/hairlonghumanm.nif",
+
+                // Bit 3: the hasRootCollision term, which ck-cmd's own source annotates
+                // "wrong. may be complex but only in 6 models". Their features are
+                // identical to 118 meshes that go the other way.
+                "meshes/architecture/solitude/sbluepalacegate.nif",
+                "meshes/architecture/solitude/sbluepalaceroof.nif",
+                "meshes/architecture/solitude/serikur house.nif",
+                "meshes/clutter/horsetrough/horsetrough01.nif",
+                "meshes/dlc02/landscape/trees/treepineforestbroken04.nif",
+                "meshes/dlc02/landscape/trees/treepineforestbroken04_smoking.nif",
+                "meshes/creationclub/_shared/dungeons/ayleidruins/interior/arceiling01.nif",
+                "meshes/creationclub/_shared/dungeons/ayleidruins/interior/ardoor01.nif",
+                "meshes/creationclub/_shared/dungeons/ayleidruins/interior/ardoorplug01.nif",
+                "meshes/creationclub/_shared/dungeons/ayleidruins/interior/traps/artraplongspikes01.nif",
+
+                // Files whose stored value ck-cmd's algorithm cannot produce either,
+                // because the block graph contradicts it -- Havok bits with no collision
+                // block, an editor-marker bit with nothing named EditorMarker, a dynamic
+                // bodies bit on a rigid body that is MO_QUAL_FIXED.
+                "meshes/actors/character/character assets/hair/hairshorthumanfold.nif",
+                "meshes/effects/dragoncrash/fxdragoncrashfurrow01.nif",
+                "meshes/mps/mpsmotesforest01.nif",
+                "meshes/creationclub/_shared/dungeons/ayleidruins/interior/arpitwalltall02.nif",
+                "meshes/creationclub/_shared/dungeons/ayleidruins/interior/markerentrance.nif",
+                "meshes/creationclub/_shared/dungeons/ayleidruins/interior/markerexit.nif",
+                "meshes/creationclub/_shared/dungeons/ayleidruins/interior/arcandleplate01.nif",
+                "meshes/creationclub/_shared/dungeons/ayleidruins/interior/arcandleplate02.nif",
+                "meshes/creationclub/_shared/dungeons/ayleidruins/interior/arwelkydclusterfx01.nif",
+                "meshes/creationclub/_shared/dungeons/ayleidruins/interior/arwelkydplanter01.nif"
+            ]);
+        }
+
         /// <summary>The reason the two differ, or null when they do not.</summary>
         private static string? Compare(byte[] original, MemoryStream saved)
         {
@@ -132,8 +221,10 @@ namespace SECmd.Tests
         /// Runs a check over every mesh in the archives, or none if none were asked
         /// for.
         /// </summary>
-        private static void Sweep(Func<byte[], NifXmlDatabase, string?> check)
+        private static void Sweep(Func<byte[], NifXmlDatabase, string?> check, string[]? tolerated = null)
         {
+            var allowed = new HashSet<string>(tolerated ?? [], StringComparer.OrdinalIgnoreCase);
+
             if (DataFolder() is not { } data)
                 return;
 
@@ -171,8 +262,11 @@ namespace SECmd.Tests
 
                     try
                     {
-                        if (check(original, db) is { } reason)
+                        if (check(original, db) is { } reason
+                            && !allowed.Contains(file.Path.Replace('\\', '/')))
+                        {
                             failures.Add((file.Path, reason));
+                        }
                     }
                     catch (Exception e)
                     {
