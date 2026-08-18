@@ -135,9 +135,15 @@ part of a scene rather than a self-contained blob:
 | `Spawn Modifier` | `NiPSysAgeDeathModifier` | another modifier | `NiPSysSpawnModifier:1` |
 | `Collider` | `NiPSysColliderManager` | `NiPSysCollider` | — |
 
-The first three point at **named nodes elsewhere in the scene**. An emitter that has
-lost its emitter object emits from the origin; a gravity modifier that has lost its
-gravity object pulls towards the origin. Neither failure is visible in the file.
+Most point at **named nodes elsewhere in the scene**. An emitter that has lost its
+emitter object emits from the origin; a gravity modifier that has lost its gravity
+object pulls towards the origin. Neither failure is visible in the file.
+
+`Collider` is the odd one: it does not name a node but starts a chain of blocks. Each
+`NiPSysCollider` carries bounce and spawn-on-collide settings, subclass fields — a
+plane's width, height and axes, a sphere's radius — a `Next Collider` continuing the
+chain, a `Parent` back to the manager, and two links of its own: a `Collider Object`
+naming a node, and a `Spawn Modifier` naming a modifier of the same stack.
 
 ---
 
@@ -426,9 +432,17 @@ naming a modifier of the same system is wired the moment the stack exists; one n
 node has to wait for the whole tree, since an emitter object may be a sibling the walk
 has not reached. That is the same deferral skins and animation already use.
 
-Three links are deliberately **not** named: the system's `Data`, its `Modifiers` array,
-and each modifier's `Target` back-pointer. All three follow from the structure being
-rebuilt, and naming them as well would give two sources for one fact.
+An array of links is named element by element — `emitter_meshes_0_ref`,
+`emitter_meshes_1_ref` — because the order is what the emission walks, and a count that
+outlived its contents would rebuild an emitter that births from nowhere.
+
+A collider chain hangs under its manager, as the modifiers hang under the system, so
+sibling order is chain order there too.
+
+Five links are deliberately **not** named: the system's `Data`, its `Modifiers` array,
+each modifier's `Target` back-pointer, and a collider's `Next Collider` and `Parent`.
+All five follow from the structure being rebuilt, and naming them as well would give
+two sources for one fact.
 
 A name that resolves to nothing is reported. Silence would mean an emitter emitting
 from the origin, or gravity pulling towards it, with nothing in the file to say why.
