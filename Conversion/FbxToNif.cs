@@ -355,6 +355,8 @@ namespace SECmd.Conversion
                 NifItem phantomCollision = _model.InsertBlock("bhkSPCollisionObject");
                 NifItem phantom = _model.InsertBlock("bhkSimpleShapePhantom");
 
+                FbxCollisionFlags.Read(bodyNode, _model, phantomCollision);
+
                 _model.SetRef(phantom, "Shape", shape);
                 _model.SetRef(phantomCollision, "Body", phantom);
 
@@ -363,11 +365,16 @@ namespace SECmd.Conversion
 
             NifItem collision = _model.InsertBlock("bhkCollisionObject");
 
+            // How the body and its node keep in step -- local transform, follow on
+            // animation -- is not visible in the shape and cannot be derived from it.
+            FbxCollisionFlags.Read(bodyNode, _model, collision);
+
             // bhkRigidBodyT applies its own transform; the plain body ignores it.
             NifItem body = _model.InsertBlock("bhkRigidBodyT");
 
             // A constraint names the bodies it joins by the node they came from.
             _bodiesByName[name] = body;
+
 
             _model.SetRef(body, "Shape", shape);
             WriteBodyTransform(body, bodyNode);

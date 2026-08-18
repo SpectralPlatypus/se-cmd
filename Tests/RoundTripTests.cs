@@ -62,12 +62,16 @@ namespace SECmd.Tests
             ["Radius"] = "refitted from the tessellated collision geometry",
             ["Dimensions"] = "refitted from the tessellated collision geometry",
 
-            // Havok mass properties are not computed. They are a function of the shape
-            // and its density, and nothing in the FBX carries the density.
-            ["Mass"] = "Havok mass properties are not computed on import",
-            ["m11"] = "Havok mass properties are not computed on import",
-            ["m22"] = "Havok mass properties are not computed on import",
-            ["m33"] = "Havok mass properties are not computed on import",
+
+            // Deliberately dropped, not lost. These bodies carry a mass on a layer
+            // their own filter calls SKYL_STATIC, and a static with a mass is treated
+            // as movable -- which is how scenery ends up falling through the world. So
+            // the static profile zeroes both, as ck-cmd's does, and the source file
+            // disagrees with itself rather than with the importer.
+            ["Mass"] = "zeroed by the static motion profile, as ck-cmd does",
+            ["m11"] = "zeroed by the static motion profile, as ck-cmd does",
+            ["m22"] = "zeroed by the static motion profile, as ck-cmd does",
+            ["m33"] = "zeroed by the static motion profile, as ck-cmd does",
 
             // 0xCD in every byte is the debug heap's fill pattern: these are fields the
             // exporter that wrote the fixture never initialised. There is nothing to
@@ -78,7 +82,6 @@ namespace SECmd.Tests
             ["Force Collided Onto PPU"] = "uninitialised in the source file (0xCD)",
 
             // Real gaps, each its own piece of work.
-            ["Flags"] = "bhkCollisionObject flags are not carried",
             ["BS Data Flags"] = "tangents are not rebuilt, so the flag that announces them is not set",
             ["Tangents"] = "tangent space is not rebuilt on import",
             ["Bitangents"] = "tangent space is not rebuilt on import",
@@ -156,6 +159,27 @@ namespace SECmd.Tests
             NifModel rebuilt = RoundTrip(source);
 
             Assert.Contains(rebuilt.Blocks, b => b.Name == kind);
+        }
+
+        [Fact]
+        public void TheCollisionObjectKeepsItsFlags()
+        {
+            // bhkCOFlags says how the body and its node keep in step: SET_LOCAL reads
+            // the body transform as local, SYNC_ON_UPDATE follows the node when it is
+            // animated. Rebuilding it as a bare ACTIVE leaves the collision the right
+            // size and in roughly the right place, no longer tracking what it belongs
+            // to.
+            NifModel source = Load("generate_rb_box.nif");
+            NifItem sourceCollision = source.Blocks.First(b => b.Name == "bhkCollisionObject");
+
+            uint expected = source.GetUInt(sourceCollision, "Flags");
+
+            Assert.Equal(9u, expected);
+
+            NifModel rebuilt = RoundTrip(source);
+            NifItem rebuiltCollision = rebuilt.Blocks.First(b => b.Name == "bhkCollisionObject");
+
+            Assert.Equal(expected, rebuilt.GetUInt(rebuiltCollision, "Flags"));
         }
 
         [Fact]
