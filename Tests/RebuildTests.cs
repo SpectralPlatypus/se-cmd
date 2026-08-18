@@ -125,6 +125,36 @@ namespace SECmd.Tests
             Assert.Equal(table.OrderBy(t => t, StringComparer.Ordinal), firstUse.OrderBy(t => t, StringComparer.Ordinal));
         }
 
+        [Fact]
+        public void AnEmptyEntryKeepsItsPlaceInTheStringTable()
+        {
+            NifModel model = NifModel.CreateNew(Db);
+
+            // Bethesda's files contain these: one vanilla weapon effect has an empty
+            // entry a third of the way down its table of thirty-six.
+            model.SetStringTable(["first", string.Empty, "third"]);
+
+            NifItem node = model.InsertBlock("NiNode");
+            model.FindItem(node, "Name")!.Value.SetCount(2);
+
+            model.SetRoots([node]);
+            model.UpdateHeader();
+
+            using var stream = new MemoryStream();
+            model.Save(stream);
+            stream.Position = 0;
+
+            NifModel reloaded = NifModel.Load(stream, Db);
+
+            Assert.Equal(
+                ["first", string.Empty, "third"],
+                reloaded.FindItem(reloaded.Header, "Strings")!.Children.Select(c => c.Value.AsString()));
+
+            // Interning would have dropped the empty one and pulled "third" up onto
+            // index 1, so every name after it would resolve to its neighbour.
+            Assert.Equal("third", reloaded.GetName(reloaded.Blocks[0]));
+        }
+
         /// <summary>Reports every leaf whose value did not survive.</summary>
         private static void Compare(NifItem expected, NifItem actual, List<string> lost)
         {
@@ -167,13 +197,12 @@ namespace SECmd.Tests
         {
             var rebuilt = NifModel.CreateNew(Db, source.Version, source.UserVersion, source.BSVersion);
 
-            // The string table has to come across in order, since a string field
-            // holds an index into it and the header writes it back out verbatim.
+            // Verbatim, not interned: the indices are already in the blocks about to
+            // be copied, so the table has to line up with them entry for entry.
+            // Bethesda's files contain empty entries, and folding one away shifts
+            // every name after it.
             if (source.FindItem(source.Header, "Strings") is { } strings)
-            {
-                foreach (NifItem entry in strings.Children)
-                    rebuilt.AddString(entry.Value.AsString());
-            }
+                rebuilt.SetStringTable(strings.Children.Select(e => e.Value.AsString()));
 
             CopyValues(rebuilt, source.Header, rebuilt.Header);
 
