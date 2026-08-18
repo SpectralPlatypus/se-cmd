@@ -1,3 +1,4 @@
+using SECmd.Conversion;
 using SECmd.Nif;
 
 namespace SECmd.Fbx
@@ -30,17 +31,25 @@ namespace SECmd.Fbx
         /// <summary>The property naming its data block's type.</summary>
         public const string DataTypeProperty = "particle_data";
 
-        /// <summary>The property counting the modifiers that follow.</summary>
-        public const string ModifierCountProperty = "particle_modifiers";
+        /// <summary>The property naming a modifier node's block type.</summary>
+        /// <remarks>
+        /// Also what marks the node as a modifier rather than a bone, so that the
+        /// import walk does not turn the stack into eleven empty NiNodes.
+        /// </remarks>
+        public const string ModifierTypeProperty = "particle_modifier";
+
+        /// <summary>The property carrying a modifier's own NIF name.</summary>
+        /// <remarks>
+        /// Separate from the node's name, which is sanitised for FBX and may have
+        /// been renamed in a DCC tool. This is the name a controller binds to.
+        /// </remarks>
+        public const string ModifierNameProperty = "particle_modifier_name";
 
         /// <summary>Prefix on the system block's own fields.</summary>
         public const string SystemPrefix = "nps_";
 
         /// <summary>Prefix on the data block's fields.</summary>
         public const string DataPrefix = "npsd_";
-
-        /// <summary>Prefix on a modifier's fields, before its index.</summary>
-        public const string ModifierPrefix = "npsm_";
 
         /// <summary>
         /// Suffix marking a property that names what a link pointed at.
@@ -60,7 +69,8 @@ namespace SECmd.Fbx
         /// <remarks>
         /// The name and transform are the node's, and a count left behind without the
         /// array it sizes would make the rebuilt block claim references it has not
-        /// got.
+        /// got. A modifier's own name is carried separately, since the node's has been
+        /// through FBX's naming rules.
         /// </remarks>
         private static readonly HashSet<string> Skipped = new(StringComparer.Ordinal)
         {
@@ -85,8 +95,23 @@ namespace SECmd.Fbx
         public static bool IsParticleSystem(NifModel model, NifItem block) =>
             model.BlockInherits(block, "NiParticleSystem");
 
-        /// <summary>Writes a particle system onto the node standing for it.</summary>
-        public static void AddParticleSystem(FbxObject node, NifModel model, NifItem system)
+        /// <summary>
+        /// Writes a particle system onto the node standing for it, with its modifier
+        /// stack as child nodes.
+        /// </summary>
+        /// <remarks>
+        /// One empty per modifier, in order, rather than one long list of properties
+        /// on the system. The stack is then something a rigger can see and reorder in
+        /// an outliner, and each modifier's fields are named as the file names them —
+        /// <c>frame_count</c> rather than <c>npsm_7_frame_count</c>.
+        ///
+        /// Sibling order is the stack order. That is the point of putting them in the
+        /// tree: moving one is meant to move it in the file too. The engine's own
+        /// ordering still comes from each modifier's <c>Order</c> field, which is
+        /// carried like any other, with array position breaking its ties.
+        /// </remarks>
+        public static void AddParticleSystem(
+            FbxScene scene, FbxObject node, NifModel model, NifItem system)
         {
             node.Properties.SetUserString(TypeProperty, system.Name);
 
@@ -98,21 +123,33 @@ namespace SECmd.Fbx
                 Write(node, model, data, DataPrefix);
             }
 
-            var modifiers = model.GetRefArray(system, "Modifiers").ToList();
+            foreach (NifItem modifier in model.GetRefArray(system, "Modifiers"))
+                AddModifier(scene, node, model, modifier);
+        }
 
-            // The order is the order they run in, so the index is part of the data
-            // rather than a way of telling them apart.
-            node.Properties.SetUserString(
-                ModifierCountProperty, modifiers.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        /// <summary>Whether a node stands for a particle modifier.</summary>
+        public static bool IsModifierNode(FbxObject node) =>
+            node.Properties.GetString(ModifierTypeProperty).Length > 0;
 
-            for (int i = 0; i < modifiers.Count; i++)
-            {
-                node.Properties.SetUserString($"{ModifierPrefix}{i}_type", modifiers[i].Name);
-                node.Properties.SetUserString(
-                    $"{ModifierPrefix}{i}_name", model.GetString(modifiers[i], "Name"));
+        private static void AddModifier(
+            FbxScene scene, FbxObject parent, NifModel model, NifItem modifier)
+        {
+            string name = model.GetString(modifier, "Name");
 
-                Write(node, model, modifiers[i], $"{ModifierPrefix}{i}_");
-            }
+            FbxObject node = FbxMeshWriter.AddModel(
+                scene,
+                NameEncoding.Sanitize(name.Length > 0 ? name : modifier.Name),
+                "Null",
+                NifTransform.Identity);
+
+            scene.Connect(node, parent);
+
+            node.Properties.SetUserString(ModifierTypeProperty, modifier.Name);
+            node.Properties.SetUserString(ModifierNameProperty, name);
+
+            // No prefix: the node is the modifier, so there is nothing to
+            // disambiguate it from.
+            Write(node, model, modifier, string.Empty);
         }
 
         private static void Write(FbxObject node, NifModel model, NifItem block, string prefix)

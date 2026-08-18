@@ -190,7 +190,7 @@ namespace SECmd.Conversion
             // runtime buffer the file only sizes -- so it stays an empty node with
             // the system carried alongside it.
             if (FbxParticleWriter.IsParticleSystem(_model, block))
-                FbxParticleWriter.AddParticleSystem(node, _model, block);
+                FbxParticleWriter.AddParticleSystem(scene, node, _model, block);
 
             if (parent is null)
                 scene.ConnectToRoot(node);

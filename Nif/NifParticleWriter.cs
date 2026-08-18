@@ -1,4 +1,3 @@
-using System.Globalization;
 using SECmd.Fbx;
 
 namespace SECmd.Nif
@@ -34,7 +33,7 @@ namespace SECmd.Nif
         /// </param>
         /// <returns>The system block, or null when the node carries none.</returns>
         public static NifItem? WriteParticleSystem(
-            this NifModel model, FbxObject node, string name,
+            this NifModel model, FbxScene scene, FbxObject node, string name,
             List<string> warnings, List<PendingParticleLink> pending)
         {
             string type = node.Properties.GetString(FbxParticleWriter.TypeProperty);
@@ -65,7 +64,7 @@ namespace SECmd.Nif
                 model.SetRef(system, "Data", data);
             }
 
-            var modifiers = WriteModifiers(model, node, system, fields, name, warnings, links);
+            var modifiers = WriteModifiers(model, scene, node, system, name, warnings, links);
 
             ResolveLinks(model, links, modifiers, name, pending);
 
@@ -98,32 +97,29 @@ namespace SECmd.Nif
         }
 
         /// <summary>
-        /// Builds the modifier stack, in the order it runs in.
+        /// Builds the modifier stack from the child nodes standing for it.
         /// </summary>
         /// <remarks>
-        /// Each modifier also points back at the system it belongs to, which is the
-        /// one link here worth restoring: without it a modifier is in the array and
-        /// attached to nothing.
+        /// Sibling order is stack order: a modifier moved in an outliner is meant to
+        /// move in the file. Each modifier also points back at the system it belongs
+        /// to, without which it is in the array and attached to nothing.
         /// </remarks>
         private static Dictionary<string, NifItem> WriteModifiers(
-            NifModel model, FbxObject node, NifItem system,
-            IReadOnlyDictionary<string, string> fields, string name, List<string> warnings,
+            NifModel model, FbxScene scene, FbxObject node, NifItem system,
+            string name, List<string> warnings,
             List<(NifItem Link, string TargetName)> links)
         {
             var byName = new Dictionary<string, NifItem>(StringComparer.Ordinal);
-            int count = Count(node, FbxParticleWriter.ModifierCountProperty);
-
-            if (count <= 0)
-                return byName;
-
             var built = new List<NifItem>();
 
-            for (int i = 0; i < count; i++)
+            foreach (FbxObject child in scene.ChildrenOf(node.Id))
             {
-                string prefix = $"{FbxParticleWriter.ModifierPrefix}{i}_";
-                string type = node.Properties.GetString($"{prefix}type");
+                if (child.Class != "Model" || !FbxParticleWriter.IsModifierNode(child))
+                    continue;
 
-                if (type.Length == 0 || !model.KnowsBlock(type))
+                string type = child.Properties.GetString(FbxParticleWriter.ModifierTypeProperty);
+
+                if (!model.KnowsBlock(type))
                 {
                     warnings.Add($"{name}: unknown particle modifier \"{type}\", it is dropped");
                     continue;
@@ -131,15 +127,17 @@ namespace SECmd.Nif
 
                 NifItem modifier = model.InsertBlock(type);
 
-                string modifierName = node.Properties.GetString($"{prefix}name");
+                // The node's own name has been through FBX's naming rules and may
+                // have been changed in a DCC tool; this is the one a controller binds
+                // to.
+                string modifierName = child.Properties.GetString(FbxParticleWriter.ModifierNameProperty);
 
                 model.SetString(modifier, "Name", modifierName);
-                Read(model, modifier, fields, prefix, links);
+                Read(model, modifier, Fields(child), string.Empty, links);
 
                 model.SetRef(modifier, "Target", system);
                 built.Add(modifier);
 
-                // How a controller finds it, and how another modifier names it.
                 if (modifierName.Length > 0)
                     byName.TryAdd(modifierName, modifier);
             }
@@ -186,9 +184,5 @@ namespace SECmd.Nif
             return fields;
         }
 
-        private static int Count(FbxObject node, string property) =>
-            int.TryParse(
-                node.Properties.GetString(property),
-                NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) ? value : 0;
     }
 }

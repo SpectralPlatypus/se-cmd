@@ -178,11 +178,16 @@ namespace SECmd.Conversion
             if (FbxConstraintReader.IsAttachmentPoint(model))
                 return;
 
+            // A modifier node is part of the particle system above it, which built it
+            // already. Left to the walk it would become an empty NiNode instead.
+            if (FbxParticleWriter.IsModifierNode(model))
+                return;
+
             // A node carrying a particle system becomes the system rather than a
             // NiNode: it is the same node, and emitting both would leave the system
             // parented under a copy of itself.
             NifItem node = NifParticleWriter.HasParticleSystem(model)
-                ? _model.WriteParticleSystem(model, name, Warnings, _pendingParticleLinks)
+                ? _model.WriteParticleSystem(_scene, model, name, Warnings, _pendingParticleLinks)
                   ?? _model.InsertBlock("NiNode")
                 : _model.InsertBlock("NiNode");
 
