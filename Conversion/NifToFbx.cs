@@ -186,6 +186,8 @@ namespace SECmd.Conversion
             _built[block] = node;
             Remember(block, node);
 
+            FbxNodeType.Write(node, block);
+
             // A particle system has no geometry to export -- its vertices are a
             // runtime buffer the file only sizes -- so it stays an empty node with
             // the system carried alongside it.

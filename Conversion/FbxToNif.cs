@@ -73,13 +73,21 @@ namespace SECmd.Conversion
         {
             _model = NifModel.CreateNew(database, _options.Version, _options.UserVersion, _options.BSVersion);
 
-            NifItem root = _model.InsertBlock("BSFadeNode");
+            // The root's kind is carried like any other node's, and matters more:
+            // BSXFlags asks twice whether the root is exactly NiNode.
+            var sceneRoots = _scene.RootModels().ToList();
+
+            string rootType = sceneRoots.Count == 1 && !HasGeometry(sceneRoots[0])
+                ? FbxNodeType.Read(sceneRoots[0], _model, "BSFadeNode")
+                : "BSFadeNode";
+
+            NifItem root = _model.InsertBlock(rootType);
 
             // Named after the file rather than after any node in the scene (§5.2).
             _model.SetString(root, "Name", _options.RootName);
             _nodesByName[_options.RootName] = root;
 
-            var rootModels = _scene.RootModels().ToList();
+            var rootModels = sceneRoots;
             var children = new List<NifItem>();
 
             // FBXWrangler renames the FBX *implicit* root to the NIF root's name, so
@@ -233,10 +241,15 @@ namespace SECmd.Conversion
             // A node carrying a particle system becomes the system rather than a
             // NiNode: it is the same node, and emitting both would leave the system
             // parented under a copy of itself.
+            // A node is rebuilt as whatever kind of node it was. FBX has one kind
+            // and NIF has a dozen, and they differ in what the engine does with them
+            // rather than in where they sit.
+            string blockType = FbxNodeType.Read(model, _model, "NiNode");
+
             NifItem node = NifParticleWriter.HasParticleSystem(model)
                 ? _model.WriteParticleSystem(_scene, model, name, Warnings, _pendingParticleLinks)
-                  ?? _model.InsertBlock("NiNode")
-                : _model.InsertBlock("NiNode");
+                  ?? _model.InsertBlock(blockType)
+                : _model.InsertBlock(blockType);
 
             _model.SetString(node, "Name", name);
             _model.SetTransform(node, transform);
