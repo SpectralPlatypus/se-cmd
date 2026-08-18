@@ -25,39 +25,51 @@ namespace SECmd.Tests
     /// their payload.
     ///
     /// **Nothing is copied out of the archives.** They are read in place, from a
-    /// path this machine happens to have. Where the game is not installed the test
-    /// returns, because a checkout without Skyrim must still pass.
+    /// folder named by <c>SECMD_SKYRIM_DATA</c>.
     ///
-    /// Set <c>SECMD_SKYRIM_DATA</c> to point at a Data folder elsewhere, and
-    /// <c>SECMD_BSA_SAMPLE</c> to a number to check a random subset instead of all
-    /// of them. The full sweep takes about five minutes, so
-    /// <c>dotnet test --filter "FullyQualifiedName!~BsaCorpus"</c> is the way to
-    /// skip it while working on something else.
+    /// **It does not run unless asked.** Without that variable the test returns, so
+    /// an ordinary <c>dotnet test</c> is unaffected and a checkout without Skyrim
+    /// passes. The sweep takes about five minutes, which is far too long to sit in
+    /// the middle of everybody's build:
+    ///
+    /// <code>
+    /// SECMD_SKYRIM_DATA="/path/to/Skyrim Special Edition/Data" dotnet test \
+    ///     --filter "FullyQualifiedName~BsaCorpus"
+    /// </code>
+    ///
+    /// <c>SECMD_BSA_SAMPLE=N</c> checks a subset instead of all of them, for when
+    /// five minutes is still too long.
     /// </remarks>
+    [Trait("Category", "Corpus")]
     public class BsaCorpusTests
     {
         private static readonly string[] Archives = ["Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa"];
 
-        /// <summary>Places a Skyrim Special Edition Data folder is likely to be.</summary>
-        private static readonly string[] Candidates =
-        [
-            "/run/media/ecanepa/53908dc5-345d-4cc7-9152-708d998bd88a/.local/share/Steam/steamapps/common/Skyrim Special Edition/Data",
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".local/share/Steam/steamapps/common/Skyrim Special Edition/Data"),
-            @"C:\Program Files (x86)\Steam\steamapps\common\Skyrim Special Edition\Data"
-        ];
-
-        /// <summary>The Data folder, or null when the game is not installed here.</summary>
+        /// <summary>
+        /// The Data folder to sweep, or null when nobody asked for one.
+        /// </summary>
+        /// <remarks>
+        /// Named rather than searched for. A test that finds the game on its own
+        /// runs on whoever happens to have it installed, which is how a five-minute
+        /// sweep ends up in somebody else's ordinary build.
+        /// </remarks>
         private static string? DataFolder()
         {
             string? configured = Environment.GetEnvironmentVariable("SECMD_SKYRIM_DATA");
 
-            if (!string.IsNullOrWhiteSpace(configured))
-                return Directory.Exists(configured) ? configured : null;
+            if (string.IsNullOrWhiteSpace(configured))
+                return null;
 
-            return Candidates.FirstOrDefault(
-                c => Archives.All(a => File.Exists(Path.Combine(c, a))));
+            // Set but wrong is a different thing from not set: somebody asked for
+            // this sweep and did not get it, and passing quietly would tell them it
+            // had run.
+            Assert.True(Directory.Exists(configured), $"SECMD_SKYRIM_DATA is not a folder: {configured}");
+
+            string? missing = Archives.FirstOrDefault(a => !File.Exists(Path.Combine(configured, a)));
+
+            Assert.True(missing is null, $"{missing} is not in {configured}");
+
+            return configured;
         }
 
         [Fact]
