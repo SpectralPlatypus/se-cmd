@@ -360,25 +360,40 @@ namespace SECmd.Nif
         /// The blocks a block points at, for the two walks above.
         /// </summary>
         /// <remarks>
-        /// ck-cmd's visitors follow every reference in the schema. This follows the
-        /// ones that can reach a collision, a constraint or a named node, which is all
-        /// either walk asks about.
+        /// Every reference in the schema, wherever it sits — a plain field, a field
+        /// inside a compound, an entry in an array. ck-cmd reaches these with a
+        /// <c>RecursiveFieldVisitor</c>, which visits the object and then accepts over
+        /// all of its valid fields, so anything short of the whole subtree counts a
+        /// different graph than it does.
+        ///
+        /// Pointers are left out. They are the upward half of a two-way link — a
+        /// collision object's <c>Target</c> naming the node that owns it — so following
+        /// them would walk back out of the subtree being measured and into the rest of
+        /// the file.
         /// </remarks>
         private static IEnumerable<NifItem> Reachable(NifModel model, NifItem block)
         {
-            foreach (NifItem child in model.GetChildren(block))
-                yield return child;
-
-            foreach (string field in new[] { "Collision Object", "Body", "Shape", "Target" })
+            foreach (NifItem link in LinksUnder(block))
             {
-                if (model.GetRef(block, field) is { } target)
+                if (model.GetBlock(link) is { } target)
                     yield return target;
             }
+        }
 
-            foreach (string array in new[] { "Constraints", "Sub Shapes", "Extra Data List" })
+        /// <summary>Every reference leaf in a block's field tree.</summary>
+        private static IEnumerable<NifItem> LinksUnder(NifItem item)
+        {
+            foreach (NifItem child in item.Children)
             {
-                foreach (NifItem target in model.GetRefArray(block, array))
-                    yield return target;
+                if (child.Value.Type == NifValueType.Link)
+                {
+                    yield return child;
+                }
+                else if (child.Value.Type != NifValueType.UpLink)
+                {
+                    foreach (NifItem nested in LinksUnder(child))
+                        yield return nested;
+                }
             }
         }
     }
