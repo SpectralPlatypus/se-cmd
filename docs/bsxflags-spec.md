@@ -169,3 +169,44 @@ Deviations, and why:
 - **`hasCollisionList` is not computed.** ck-cmd computes it and never uses it.
 - **Bit 0's skinned-animation override (§4) is not applied**, because se-cmd does not
   write Havok behaviour files; there are no skinned animations for it to know about.
+
+## 8. Measured against the game
+
+Running the calculation over every mesh Skyrim SE ships and comparing it with the value
+the file already stores: **22,007 of 22,047 agree**. That is the useful check on this
+implementation, because those files were written by the exporter that defined the rules,
+so a disagreement is either a bug here or a malformed file — and telling those apart is
+what `NifScan` was for in the first place.
+
+The 40 that disagree fall into four groups, and none of them is a fifth rule waiting to
+be found.
+
+| Files | Bit | Which way | What it is |
+| --- | --- | --- | --- |
+| 17 | 7 | calculated, not stored | One collision, no constraints, so §5's chain test says single. Mostly `meshes/shadertests/*`, plus legacy assets such as `clutter/table02.nif` and `architecture/markarth/markarthtemphouse.nif` |
+| 5 | 3 | stored, not calculated | The root carries the collision, so `hasRootCollision` suppresses bit 3 |
+| 4 | 1, 2, 6, 7 | stored, not calculated | The file claims collision it does not contain |
+| 14 | 0, 5, 6, 9 | mixed | Mostly Creation Club, plus two `marker*.nif` |
+
+The second group is the one to read carefully: those five are exactly the case §3.4's
+source comment calls *"wrong. may be complex but only in 6 models, need further
+investigation"*, and they turn up at almost the count it names. Reproducing ck-cmd's
+uncertainty at ck-cmd's own scale is evidence the port is faithful, so the rule is left
+as written rather than bent to fit five files.
+
+The third group cannot be anything but the files. `creationclub/.../arpitwalltall02.nif`
+stores `0x82` — Havok, single chain — with no collision block anywhere in it, and
+`character assets/hair/hairshorthumanfold.nif` stores ragdoll and dynamic bodies with
+the same. No calculation from the graph can produce those, because the graph does not
+say them.
+
+The first group is the least settled. Seventeen files with a single collision and no
+constraint are a single collision by any reading of §5, and they do not set bit 7. They
+are concentrated in test and legacy content, which suggests files that predate the rule
+rather than a rule this misreads — but that is inference, not evidence.
+
+Three of the remainder have not been run down: `hairlonghumanm.nif` (two collisions and
+two constraints, where the distinct-pair counting of §5 decides bit 7),
+`arcandleplate01.nif` and `arcandleplate02.nif` (bit 6, so a quality type read), and
+`markerentrance.nif` / `markerexit.nif` (bit 5, on files whose nodes are not named
+`EditorMarker`). Any of those could be this implementation rather than the file.
