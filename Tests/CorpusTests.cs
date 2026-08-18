@@ -6,50 +6,52 @@ using Xunit;
 namespace SECmd.Tests
 {
     /// <summary>
-    /// The reader and writer against nifly's test corpus.
+    /// The reader and writer against every NIF in the test resources.
     /// </summary>
     /// <remarks>
-    /// Our own fixtures are all Skyrim LE files produced by one exporter, which is a
-    /// narrow slice of what a NIF can be. These come from
-    /// <see href="https://github.com/ousnius/nifly">nifly</see>, the library behind
-    /// BodySlide and Outfit Studio, and cover Skyrim SE as well as LE, skinned
-    /// meshes, deep block graphs, loose blocks, multi-bounds, ordered nodes and
-    /// furniture collision.
+    /// Three sets, with different provenance and different reasons for being here:
+    /// four cubes this project's own tooling produced, nifly's corpus, and one
+    /// skeleton from XPMSSE. Between them they cover Skyrim LE and SE, skinned
+    /// meshes, deep block graphs, loose blocks, multi-bounds, ordered nodes,
+    /// collision, constraints, particles and controllers.
     ///
-    /// They are the only skinned Skyrim SE files here, and the only real evidence
-    /// that the format support is broad rather than merely sufficient for four
-    /// hand-made cubes.
+    /// The fidelity checks below sweep the lot rather than naming files, so a
+    /// fixture added for one narrow reason is checked against the whole reader and
+    /// writer for free. Everything else in this class is about the corpus files
+    /// specifically, and names them.
     /// </remarks>
-    public class NiflyCorpusTests
+    public class CorpusTests
     {
         private static readonly NifXmlDatabase Db = NifXmlDatabase.LoadEmbedded();
 
-        private static string PathTo(string name) =>
-            Path.Combine(AppContext.BaseDirectory, "Resources", "nifly", name);
+        private static string ResourceRoot => Path.Combine(AppContext.BaseDirectory, "Resources");
 
-        /// <summary>Every corpus file that is expected to load.</summary>
-        public static TheoryData<string> Corpus() =>
-        [
-            "TestNifFile_Animated_LE.nif",
-            "TestNifFile_DeepGraph_SE.nif",
-            "TestNifFile_FixBSXFlags_AddExtEmit.nif",
-            "TestNifFile_FixBSXFlags_RemoveExtEmit.nif",
-            "TestNifFile_FixShaderFlags_AddEnvMap.nif",
-            "TestNifFile_FixShaderFlags_RemoveEnvMap.nif",
-            "TestNifFile_Furniture_Col_SE.nif",
-            "TestNifFile_LooseBlocks_SE.nif",
-            "TestNifFile_MultiBound_SE.nif",
-            "TestNifFile_Optimize_Dynamic_LE_to_SE.nif",
-            "TestNifFile_Optimize_Dynamic_SE_to_LE.nif",
-            "TestNifFile_Optimize_LE_to_SE.nif",
-            "TestNifFile_Optimize_SE_to_LE.nif",
-            "TestNifFile_OrderedNode_SE.nif",
-            "TestNifFile_RootNonZero.nif",
-            "TestNifFile_Skinned_Dynamic_SE.nif",
-            "TestNifFile_Skinned_NoNiSkinDataWeights.nif",
-            "TestNifFile_Skinned_SE.nif",
-            "TestNifFile_Static_SE.nif"
-        ];
+        private static string PathTo(string name) => Path.Combine(ResourceRoot, "nifly", name);
+
+        /// <summary>
+        /// Every NIF in the resources, by path relative to them.
+        /// </summary>
+        /// <remarks>
+        /// Found rather than listed, so that adding a fixture anywhere under
+        /// Resources puts it through the checks below without anyone remembering to.
+        /// The corrupt one is excluded because failing to load is what it is for.
+        /// </remarks>
+        public static TheoryData<string> AllFixtures()
+        {
+            var data = new TheoryData<string>();
+
+            foreach (string relative in FixturePaths())
+                data.Add(relative);
+
+            return data;
+        }
+
+        private static IEnumerable<string> FixturePaths() =>
+            Directory
+                .GetFiles(ResourceRoot, "*.nif", SearchOption.AllDirectories)
+                .OrderBy(f => f, StringComparer.Ordinal)
+                .Select(f => Path.GetRelativePath(ResourceRoot, f))
+                .Where(r => !r.Contains("Corrupted", StringComparison.Ordinal));
 
         /// <summary>The skinned files, which are the ones with skin blocks.</summary>
         public static TheoryData<string> Skinned() =>
@@ -63,10 +65,10 @@ namespace SECmd.Tests
         ];
 
         [Theory]
-        [MemberData(nameof(Corpus))]
-        public void LoadsWithoutWarnings(string name)
+        [MemberData(nameof(AllFixtures))]
+        public void LoadsWithoutWarnings(string relative)
         {
-            NifModel model = NifModel.Load(PathTo(name), Db);
+            NifModel model = NifModel.Load(Path.Combine(ResourceRoot, relative), Db);
 
             Assert.NotEmpty(model.Blocks);
             Assert.Empty(model.Warnings);
@@ -78,12 +80,14 @@ namespace SECmd.Tests
         /// stream directions all have to agree for the bytes to match.
         /// </summary>
         [Theory]
-        [MemberData(nameof(Corpus))]
-        public void SavingReproducesTheFileByteForByte(string name)
+        [MemberData(nameof(AllFixtures))]
+        public void SavingReproducesTheFileByteForByte(string relative)
         {
-            byte[] original = File.ReadAllBytes(PathTo(name));
+            string path = Path.Combine(ResourceRoot, relative);
 
-            NifModel model = NifModel.Load(PathTo(name), Db);
+            byte[] original = File.ReadAllBytes(path);
+
+            NifModel model = NifModel.Load(path, Db);
 
             using var saved = new MemoryStream();
             model.Save(saved);
@@ -96,7 +100,7 @@ namespace SECmd.Tests
             {
                 if (original[i] != actual[i])
                 {
-                    Assert.Fail($"{name} differs at offset 0x{i:X} " +
+                    Assert.Fail($"{relative} differs at offset 0x{i:X} " +
                                 $"(expected 0x{original[i]:X2}, got 0x{actual[i]:X2})");
                 }
             }
@@ -105,14 +109,13 @@ namespace SECmd.Tests
         [Fact]
         public void CoversBothSkyrimStreamVersions()
         {
-            var versions = Directory
-                .GetFiles(Path.Combine(AppContext.BaseDirectory, "Resources", "nifly"), "*.nif")
-                .Where(f => !f.Contains("Corrupted", StringComparison.Ordinal))
-                .Select(f => NifModel.Load(f, Db).BSVersion)
+            var versions = FixturePaths()
+                .Select(r => NifModel.Load(Path.Combine(ResourceRoot, r), Db).BSVersion)
                 .Distinct()
                 .ToList();
 
-            // 83 is Skyrim LE, 100 Skyrim SE. Our own fixtures are all 83.
+            // 83 is Skyrim LE, 100 Skyrim SE. This project's own fixtures are all 83,
+            // so both only appear because the borrowed corpora are here.
             Assert.Contains(83u, versions);
             Assert.Contains(100u, versions);
         }
