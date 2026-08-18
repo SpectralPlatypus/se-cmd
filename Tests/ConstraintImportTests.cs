@@ -9,10 +9,11 @@ namespace SECmd.Tests
     /// Rebuilding Havok constraints from a scene's attachment points.
     /// </summary>
     /// <remarks>
-    /// ck-cmd has no equivalent: HKXWrangler reads the same nodes but builds Havok
-    /// constraint instances for a ragdoll, never NIF blocks (see
-    /// `docs/hkx-constraint-spec.md` §3–4). So the round trip is the only thing that
-    /// can say whether a constraint came back, and most of what follows is one.
+    /// ck-cmd rebuilds them too, but by way of Havok: HKXWrangler turns the nodes into
+    /// constraint instances and FBXWrangler converts those into blocks. Four of the
+    /// nine constraint types cannot make that trip, and two of the four are what the
+    /// test corpus contains (see `docs/hkx-constraint-spec.md` §3.6). se-cmd goes
+    /// straight from FBX to NIF, so the round trip is what says whether that helped.
     /// </remarks>
     public class ConstraintImportTests
     {
@@ -317,6 +318,82 @@ namespace SECmd.Tests
 
             Assert.Equal(-1.25f, model.FindItem(descriptor, "Min Angle")!.Value.ToFloat(), 4);
             Assert.Equal(1.25f, model.FindItem(descriptor, "Max Angle")!.Value.ToFloat(), 4);
+        }
+
+        [Fact]
+        public void LegacyFramesAreReadOutOfTheColumns()
+        {
+            // A frame with all three axes distinct, so reading it the wrong way
+            // round cannot pass by symmetry.
+            NifMatrix33 frame = NifTransform.RotationFromEulerDegrees(15f, -40f, 25f);
+
+            FbxDocument document = FbxDocumentTemplate.CreateEmpty();
+            var scene = new FbxScene(document);
+
+            FbxObject root = FbxMeshWriter.AddModel(scene, "root", "Null", NifTransform.Identity);
+            scene.ConnectToRoot(root);
+
+            FbxObject body = FbxMeshWriter.AddModel(scene, "Bone01_rb", "Null", NifTransform.Identity);
+            scene.Connect(body, root);
+            FbxObject shape = FbxMeshWriter.AddModel(scene, "Bone01_sphere", "Null", NifTransform.Identity);
+            scene.Connect(shape, body);
+            scene.Connect(FbxMeshWriter.AddGeometry(scene, "Bone01_sphere", Sphere()), shape);
+
+            FbxObject other = FbxMeshWriter.AddModel(scene, "Bone02_rb", "Null", NifTransform.Identity);
+            scene.Connect(other, root);
+            FbxObject otherShape = FbxMeshWriter.AddModel(scene, "Bone02_sphere", "Null", NifTransform.Identity);
+            scene.Connect(otherShape, other);
+            scene.Connect(FbxMeshWriter.AddGeometry(scene, "Bone02_sphere", Sphere()), otherShape);
+
+            // ck-cmd stores the transpose of the joint frame and inverts the rotation
+            // when reading it back, so the axes are the columns (spec 1.2, 3.2).
+            FbxObject point = FbxMeshWriter.AddModel(
+                scene,
+                $"Bone02_rb{FbxConstraintWriter.NameSeparator}Bone01_rb{FbxConstraintWriter.NameSuffix}",
+                "Null",
+                new NifTransform(new NifVector3(), frame, 1f));
+
+            scene.Connect(point, other);
+            point.Properties.SetUserString(FbxConstraintWriter.TypeProperty, "Ragdoll");
+            scene.Flush();
+
+            NifModel model = new FbxToNif(new FbxScene(document), new FbxToNifOptions { RootName = "test" })
+                .Convert(Db);
+
+            NifItem descriptor = model.ConstraintDescriptor(
+                model.Blocks.First(b => b.Name == "bhkRagdollConstraint"));
+
+            AssertAxis(model, descriptor, "Twist B", frame.M11, frame.M21, frame.M31);
+            AssertAxis(model, descriptor, "Plane B", frame.M12, frame.M22, frame.M32);
+            AssertAxis(model, descriptor, "Motor B", frame.M13, frame.M23, frame.M33);
+        }
+
+        private static void AssertAxis(
+            NifModel model, NifItem descriptor, string field, float x, float y, float z)
+        {
+            NifVector4 axis = model.FindItem(descriptor, field)!.Value.Get<NifVector4>();
+
+            Assert.Equal(x, axis.X, 4);
+            Assert.Equal(y, axis.Y, 4);
+            Assert.Equal(z, axis.Z, 4);
+        }
+
+        [Fact]
+        public void ExportedFramesUseCkCmdsConvention()
+        {
+            NifModel source = Load("TestNifFile_DeepGraph_SE.nif");
+
+            // The chain has no axes at all -- it constrains points -- so the frame
+            // has to come out unrotated rather than as some transpose of nothing.
+            FbxObject point = new FbxScene(Export("TestNifFile_DeepGraph_SE.nif"))
+                .OfClass("Model")
+                .Single(o => o.Name.EndsWith(FbxConstraintWriter.NameSuffix, StringComparison.Ordinal));
+
+            (double x, double y, double z) = point.Properties.GetVector3("Lcl Rotation");
+
+            Assert.Equal(0d, x, 4);
+            Assert.Equal(0d, y, 4);
+            Assert.Equal(0d, z, 4);
         }
 
         [Fact]

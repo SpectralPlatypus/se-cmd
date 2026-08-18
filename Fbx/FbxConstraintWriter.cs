@@ -144,9 +144,17 @@ namespace SECmd.Fbx
         /// Where the joint sits, in the second body's space.
         /// </summary>
         /// <remarks>
-        /// The axes are written as the matrix's rows rather than its columns because
-        /// NIF applies its matrices to row vectors; the spec describes the same frame
-        /// from the other convention.
+        /// Written as the **transpose** of the frame — the axes end up as the
+        /// matrix's columns, where a row-vector matrix like this one would put them
+        /// in its rows. That is not a mistake and not a convention mismatch to be
+        /// tidied away: it is what ck-cmd writes, and its importer inverts the
+        /// rotation again on the way back in (constraint spec §1.2, §3.2). Writing
+        /// the frame the upright way round would leave every attachment point
+        /// inverted the moment ck-cmd read the file.
+        ///
+        /// The cost is that the node's visible orientation is the inverse of the
+        /// joint's. se-cmd's own round trip does not go through it — the axes are in
+        /// the properties too — so only a rigger looking at the node sees it.
         /// </remarks>
         private static NifTransform FrameOf(NifModel model, NifItem descriptor)
         {
@@ -169,9 +177,9 @@ namespace SECmd.Fbx
 
                 rotation = new NifMatrix33
                 {
-                    M11 = x.X, M12 = x.Y, M13 = x.Z,
-                    M21 = y.X, M22 = y.Y, M23 = y.Z,
-                    M31 = z.X, M32 = z.Y, M33 = z.Z
+                    M11 = x.X, M12 = y.X, M13 = z.X,
+                    M21 = x.Y, M22 = y.Y, M23 = z.Y,
+                    M31 = x.Z, M32 = y.Z, M33 = z.Z
                 };
 
                 break;

@@ -7,9 +7,12 @@ namespace SECmd.Nif
     /// Rebuilds Havok constraints from the attachment points in a scene.
     /// </summary>
     /// <remarks>
-    /// ck-cmd has no equivalent of this: HKXWrangler reads the same attachment points
-    /// but builds Havok constraint instances for a <c>.hkx</c> ragdoll, never NIF
-    /// blocks (constraint spec §3, §4).
+    /// ck-cmd does this by way of Havok: HKXWrangler turns the attachment points into
+    /// <c>hkpConstraintInstance</c>s and FBXWrangler converts those back into blocks.
+    /// Going through Havok costs it four of the nine constraint types, since only
+    /// ragdolls, hinges and limited hinges have a form on both sides — and a plain
+    /// hinge is demoted to a limited one on the way (constraint spec §3.6). This goes
+    /// straight from the scene to the block instead.
     ///
     /// Two sources of truth, in order. A scene se-cmd exported carries the whole
     /// descriptor as <c>hkc_</c> properties, so the block is filled straight from
@@ -238,7 +241,10 @@ namespace SECmd.Nif
 
             NifMatrix33 r = constraint.FrameB.Rotation;
 
-            // The axes are the matrix's rows, matching how the writer laid them out.
+            // Read out of the columns, because the node carries the transpose of the
+            // frame -- this is where HKXWrangler's own rotation inverse sits (spec
+            // §1.2, §3.2). Reading the rows instead gives every axis of every joint
+            // the wrong way round, which nothing about the file would show.
             foreach (string[] axes in new[]
                      {
                          new[] { "Twist B", "Plane B", "Motor B" },
@@ -248,9 +254,9 @@ namespace SECmd.Nif
                 if (model.FindItem(descriptor, axes[0]) is null)
                     continue;
 
-                SetVector(model, descriptor, axes[0], new NifVector3(r.M11, r.M12, r.M13));
-                SetVector(model, descriptor, axes[1], new NifVector3(r.M21, r.M22, r.M23));
-                SetVector(model, descriptor, axes[2], new NifVector3(r.M31, r.M32, r.M33));
+                SetVector(model, descriptor, axes[0], new NifVector3(r.M11, r.M21, r.M31));
+                SetVector(model, descriptor, axes[1], new NifVector3(r.M12, r.M22, r.M32));
+                SetVector(model, descriptor, axes[2], new NifVector3(r.M13, r.M23, r.M33));
                 break;
             }
 
