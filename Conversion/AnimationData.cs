@@ -46,7 +46,7 @@ namespace SECmd.Conversion
     /// a property that cannot be traced back is a property that can only be
     /// exported.
     /// </remarks>
-    public sealed class AnimProperty
+    public sealed class AnimProperty(int components = 1)
     {
         /// <summary>The separator between the parts of an encoded name.</summary>
         /// <remarks>
@@ -58,7 +58,21 @@ namespace SECmd.Conversion
         /// <summary>The FBX property name, encoding the identity below.</summary>
         public required string Name { get; init; }
 
-        public AnimCurve Curve { get; } = new();
+        /// <summary>
+        /// One curve per component: one for a scalar, three for a colour.
+        /// </summary>
+        /// <remarks>
+        /// A colour is three curves for the same reason a translation is: FBX keys
+        /// each component separately, while a NIF keys the whole vector at once.
+        /// </remarks>
+        public AnimCurve[] Curves { get; } =
+            Enumerable.Range(0, components).Select(_ => new AnimCurve()).ToArray();
+
+        /// <summary>The only curve, for the scalar tracks that have just one.</summary>
+        public AnimCurve Curve => Curves[0];
+
+        /// <summary>Whether this is a colour rather than a single number.</summary>
+        public bool IsColor => Curves.Length == 3;
 
         /// <summary>Whether the source was a boolean track rather than a float one.</summary>
         public bool IsBoolean { get; init; }
@@ -155,7 +169,7 @@ namespace SECmd.Conversion
         public IEnumerable<AnimCurve> Curves => Translation.Concat(Rotation).Concat(Scale);
 
         /// <summary>Everything keyed on this node, transform and properties alike.</summary>
-        public IEnumerable<AnimCurve> AllCurves => Curves.Concat(Properties.Select(p => p.Curve));
+        public IEnumerable<AnimCurve> AllCurves => Curves.Concat(Properties.SelectMany(p => p.Curves));
 
         public bool HasKeys => AllCurves.Any(c => c.HasKeys);
     }

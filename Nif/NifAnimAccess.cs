@@ -13,9 +13,11 @@ namespace SECmd.Nif
     /// quaternions or — when the rotation type says XYZ — as three separate float
     /// groups.
     ///
-    /// Only transform tracks are read. Float and boolean controllers (shader
-    /// properties, visibility, particle emitters) reach the same sequences through
-    /// their own interpolator types and are skipped rather than mis-read.
+    /// The same sequences also drive named scalars and colours — a shader's alpha,
+    /// an emitter's birth rate, whether something is visible — through float, boolean
+    /// and point interpolators. Those become properties on the node's track rather
+    /// than moving it, and what they drive is recorded by the four identifying
+    /// strings beside them.
     /// </remarks>
     public static class NifAnimAccess
     {
@@ -114,25 +116,31 @@ namespace SECmd.Nif
         /// One node-attached controller, or null when it is not a kind this reads.
         /// </summary>
         /// <remarks>
-        /// The two the spec names. Others exist — transform, colour, texture — but
-        /// they drive things FBX has no property for, and inventing one would export
-        /// a number no importer could act on.
+        /// The two the spec names, plus any controller driving a colour. The rest —
+        /// transform controllers, texture flipping — drive things FBX has no property
+        /// for, and inventing one would export a number no importer could act on.
         /// </remarks>
         private static AnimProperty? ReadStandaloneController(NifModel model, NifItem controller)
         {
             bool visibility = model.BlockInherits(controller, "NiVisController");
-
-            if (!visibility && !model.BlockInherits(controller, "NiFloatExtraDataController"))
-                return null;
+            bool extraData = model.BlockInherits(controller, "NiFloatExtraDataController");
 
             if (model.GetRef(controller, "Interpolator") is not { } interpolator)
                 return null;
 
+            bool colour = model.BlockInherits(interpolator, "NiPoint3Interpolator");
+
+            // Colour controllers are taken on the interpolator's word rather than by
+            // class, because there are several of them -- material, lighting shader,
+            // effect shader -- and they agree about nothing except that.
+            if (!visibility && !extraData && !colour)
+                return null;
+
             // An extra data controller names its target through the extra data's own
             // name, which is also the id a sequence would identify it by.
-            string id = visibility ? string.Empty : model.GetString(controller, "Extra Data Name");
+            string id = extraData ? model.GetString(controller, "Extra Data Name") : string.Empty;
 
-            var property = new AnimProperty
+            var property = new AnimProperty(colour ? 3 : 1)
             {
                 Name = AnimProperty.ToPropertyName(controller.Name, id, string.Empty, string.Empty),
                 IsBoolean = visibility,
@@ -140,7 +148,7 @@ namespace SECmd.Nif
                 ControllerId = id
             };
 
-            return ReadScalarKeys(model, interpolator, property.Curve) ? property : null;
+            return ReadValueKeys(model, interpolator, property) ? property : null;
         }
 
         /// <summary>One sequence, or null when it animates nothing this reads.</summary>
@@ -211,11 +219,12 @@ namespace SECmd.Nif
             }
 
             bool boolean = model.BlockInherits(interpolator, "NiBoolInterpolator");
+            bool colour = model.BlockInherits(interpolator, "NiPoint3Interpolator");
 
-            if (!boolean && !model.BlockInherits(interpolator, "NiFloatInterpolator"))
+            if (!boolean && !colour && !model.BlockInherits(interpolator, "NiFloatInterpolator"))
                 return;
 
-            var property = new AnimProperty
+            var property = new AnimProperty(colour ? 3 : 1)
             {
                 Name = AnimProperty.ToPropertyName(
                     model.GetString(controlled, "Controller Type"),
@@ -229,7 +238,7 @@ namespace SECmd.Nif
                 PropertyType = model.GetString(controlled, "Property Type")
             };
 
-            if (ReadScalarKeys(model, interpolator, property.Curve))
+            if (ReadValueKeys(model, interpolator, property))
                 TrackFor(tracks, name).Properties.Add(property);
         }
 
@@ -249,15 +258,16 @@ namespace SECmd.Nif
         }
 
         /// <summary>
-        /// Reads a float or boolean interpolator's keys.
+        /// Reads a float, boolean or point interpolator's keys.
         /// </summary>
         /// <remarks>
-        /// Both store their keys the same way — a single key group two blocks down —
-        /// so the only difference is that boolean values arrive as bytes. They are
-        /// read as the zero and one they stand for, which is what an FBX curve can
-        /// carry anyway.
+        /// All three store their keys the same way — a single key group two blocks
+        /// down — and differ only in what a key holds. Boolean values arrive as bytes
+        /// and are read as the zero and one they stand for, which is all an FBX curve
+        /// can carry anyway; a point's three components become three curves, since
+        /// FBX keys each one separately.
         /// </remarks>
-        private static bool ReadScalarKeys(NifModel model, NifItem interpolator, AnimCurve curve)
+        private static bool ReadValueKeys(NifModel model, NifItem interpolator, AnimProperty property)
         {
             if (model.GetRef(interpolator, "Data") is not { } block
                 || model.FindItem(block, "Data") is not { } group)
@@ -269,15 +279,24 @@ namespace SECmd.Nif
 
             foreach (NifItem key in KeysOf(model, group))
             {
+                float time = FloatOf(model, key, "Time");
                 NifItem? value = model.FindItem(key, "Value");
 
-                curve.Keys.Add(new AnimKey(
-                    FloatOf(model, key, "Time"),
-                    value?.Value.ToFloat() ?? 0f,
-                    interpolation));
+                if (property.IsColor)
+                {
+                    NifVector3 point = value?.Value.Get<NifVector3>() ?? new NifVector3();
+
+                    property.Curves[0].Keys.Add(new AnimKey(time, point.X, interpolation));
+                    property.Curves[1].Keys.Add(new AnimKey(time, point.Y, interpolation));
+                    property.Curves[2].Keys.Add(new AnimKey(time, point.Z, interpolation));
+                }
+                else
+                {
+                    property.Curve.Keys.Add(new AnimKey(time, value?.Value.ToFloat() ?? 0f, interpolation));
+                }
             }
 
-            return curve.HasKeys;
+            return property.Curves.Any(c => c.HasKeys);
         }
 
         /// <summary>
