@@ -88,15 +88,22 @@ namespace SECmd.Nif
                 if (name.Length == 0)
                     continue;
 
-                for (NifItem? controller = model.GetRef(block, "Controller");
-                     controller is not null;
-                     controller = model.GetRef(controller, "Next Controller"))
+                // A node's own chain, and the chains of the properties hanging off
+                // it: a shader's alpha or a texture's flipbook is controlled from the
+                // property, not from the node, but it is the node an FBX track can
+                // bind to.
+                foreach (NifItem owner in ControllerHosts(model, block))
                 {
-                    if (claimed.Contains(controller))
-                        continue;
+                    for (NifItem? controller = model.GetRef(owner, "Controller");
+                         controller is not null;
+                         controller = model.GetRef(controller, "Next Controller"))
+                    {
+                        if (claimed.Contains(controller))
+                            continue;
 
-                    if (ReadStandaloneController(model, controller) is { } property)
-                        TrackFor(tracks, name).Properties.Add(property);
+                        if (ReadStandaloneController(model, controller) is { } property)
+                            TrackFor(tracks, name).Properties.Add(property);
+                    }
                 }
             }
 
@@ -112,13 +119,31 @@ namespace SECmd.Nif
             sequences.Add(sequence);
         }
 
+        /// <summary>Everything on a node that can carry a controller chain.</summary>
+        public static IEnumerable<NifItem> ControllerHosts(NifModel model, NifItem block)
+        {
+            yield return block;
+
+            foreach (string field in new[] { "Shader Property", "Alpha Property" })
+            {
+                if (model.GetRef(block, field) is { } property)
+                    yield return property;
+            }
+
+            // Older files list their properties instead of naming them.
+            foreach (NifItem property in model.GetRefArray(block, "Properties"))
+                yield return property;
+        }
+
         /// <summary>
-        /// One node-attached controller, or null when it is not a kind this reads.
+        /// One attached controller, or null when it is not a kind this reads.
         /// </summary>
         /// <remarks>
-        /// The two the spec names, plus any controller driving a colour. The rest —
-        /// transform controllers, texture flipping — drive things FBX has no property
-        /// for, and inventing one would export a number no importer could act on.
+        /// Judged by its interpolator, as a controlled block is (see
+        /// <see cref="ReadControlledBlock"/>): anything driving a float, a boolean or
+        /// a point is a named scalar or colour, whatever the controller class is
+        /// called. Transform controllers are left alone, since they move the node
+        /// rather than name something on it.
         /// </remarks>
         private static AnimProperty? ReadStandaloneController(NifModel model, NifItem controller)
         {
@@ -130,11 +155,12 @@ namespace SECmd.Nif
 
             bool colour = model.BlockInherits(interpolator, "NiPoint3Interpolator");
 
-            // Colour controllers are taken on the interpolator's word rather than by
-            // class, because there are several of them -- material, lighting shader,
-            // effect shader -- and they agree about nothing except that.
-            if (!visibility && !extraData && !colour)
+            if (!colour
+                && !model.BlockInherits(interpolator, "NiFloatInterpolator")
+                && !model.BlockInherits(interpolator, "NiBoolInterpolator"))
+            {
                 return null;
+            }
 
             // An extra data controller names its target through the extra data's own
             // name, which is also the id a sequence would identify it by.
