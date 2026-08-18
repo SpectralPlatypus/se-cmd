@@ -256,6 +256,7 @@ namespace SECmd.Conversion
             scene.Connect(bodyNode, parent);
 
             FbxCollisionFlags.Write(bodyNode, _model, collision);
+            FbxRigidBodyInfo.Write(bodyNode, _model, body);
 
             // Constraints join two bodies and are emitted once the walk has seen
             // both, so the bodies are remembered as they are converted.

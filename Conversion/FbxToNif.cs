@@ -379,6 +379,7 @@ namespace SECmd.Conversion
             _model.SetRef(body, "Shape", shape);
             WriteBodyTransform(body, bodyNode);
             WriteStaticMotion(body);
+            WriteMassProperties(body, shape, bodyNode);
 
             _model.SetRef(collision, "Body", body);
 
@@ -400,6 +401,79 @@ namespace SECmd.Conversion
                 0f));
 
             _model.FindItem(body, @"Rigid Body Info\Rotation")?.Value.Set(transform.ToQuaternion());
+        }
+
+        /// <summary>
+        /// Gives a body its mass and the inertia tensor that follows from it.
+        /// </summary>
+        /// <remarks>
+        /// The two are not alike. The mass is authored and is carried across; the
+        /// tensor is a consequence of that mass and the shape, and is computed, because
+        /// ck-cmd's is computed too -- it asks Havok, and this arrives at the same
+        /// numbers the files ck-cmd generated hold.
+        ///
+        /// A static keeps neither. Its layer is the whole of the decision, and a static
+        /// carrying a mass is treated as movable, which is how scenery ends up falling
+        /// through the world -- so the carried value is dropped rather than trusted.
+        /// </remarks>
+        private void WriteMassProperties(NifItem body, NifItem shape, FbxObject bodyNode)
+        {
+            if (FbxRigidBodyInfo.IsStatic(FbxRigidBodyInfo.LayerOf(bodyNode)))
+                return;
+
+            if (FbxRigidBodyInfo.MassOf(bodyNode) is not { } mass || mass <= 0f)
+                return;
+
+            SetFloat(body, @"Rigid Body Info\Mass", mass);
+
+            if (InertiaOf(shape, mass) is not { } tensor)
+                return;
+
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m11", tensor.M11);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m12", tensor.M12);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m13", tensor.M13);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m21", tensor.M21);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m22", tensor.M22);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m23", tensor.M23);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m31", tensor.M31);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m32", tensor.M32);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m33", tensor.M33);
+        }
+
+        /// <summary>The tensor for a rebuilt shape, or null for one with no formula.</summary>
+        private NifMatrix33? InertiaOf(NifItem shape, float mass) => shape.Name switch
+        {
+            "bhkBoxShape" => HavokInertia.Box(
+                mass, _model.FindItem(shape, "Dimensions")?.Value.Get<NifVector3>() ?? default),
+
+            "bhkSphereShape" => HavokInertia.Sphere(
+                mass, _model.FindItem(shape, "Radius")?.Value.ToFloat() ?? 0f),
+
+            "bhkCapsuleShape" => HavokInertia.Capsule(
+                mass,
+                _model.FindItem(shape, "First Point")?.Value.Get<NifVector3>() ?? default,
+                _model.FindItem(shape, "Second Point")?.Value.Get<NifVector3>() ?? default,
+                _model.FindItem(shape, "Radius")?.Value.ToFloat() ?? 0f),
+
+            "bhkConvexVerticesShape" => HavokInertia.Convex(mass, HullOf(shape)),
+
+            _ => null
+        };
+
+        private MeshGeometry HullOf(NifItem shape)
+        {
+            var points = new List<NifVector3>();
+
+            if (_model.FindItem(shape, "Vertices") is { } vertices)
+            {
+                foreach (NifItem vertex in vertices.Children)
+                {
+                    NifVector4 v = vertex.Value.Get<NifVector4>();
+                    points.Add(new NifVector3(v.X, v.Y, v.Z));
+                }
+            }
+
+            return ShapeTessellator.ConvexHull(points);
         }
 
         /// <summary>
