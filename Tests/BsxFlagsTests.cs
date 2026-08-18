@@ -1,3 +1,5 @@
+using SECmd.Conversion;
+using SECmd.Fbx;
 using SECmd.Nif;
 using Xunit;
 
@@ -169,6 +171,65 @@ namespace SECmd.Tests
                 Assert.Equal(0u, Load("nifly", name).Calculate() & 0xFFFFFC00u);
 
             Assert.Equal(0u, Load("xpmsse", "skeleton_cow.nif").Calculate() & 0xFFFFFC00u);
+        }
+
+        // --- the importer ------------------------------------------------------
+
+        /// <summary>NIF to FBX and back, which is where the calculation is used.</summary>
+        private static NifModel RoundTrip(string nif)
+        {
+            NifModel source = NifModel.Load(
+                Path.Combine(AppContext.BaseDirectory, "Resources", nif), Db);
+
+            var converter = new FbxToNif(
+                new FbxScene(new NifToFbx(source).Convert()),
+                new FbxToNifOptions
+                {
+                    RootName = Path.GetFileNameWithoutExtension(nif),
+                    LegendaryEdition = true
+                });
+
+            return converter.Convert(Db);
+        }
+
+        [Fact]
+        public void TheImporterHangsOneOffTheRoot()
+        {
+            NifModel rebuilt = RoundTrip("generate_rb_box.nif");
+
+            NifItem root = rebuilt.GetBlock(rebuilt.FindItem(rebuilt.Footer, "Roots")!.Children[0])!;
+
+            NifItem bsx = Assert.Single(
+                rebuilt.GetRefArray(root, "Extra Data List"), b => b.Name == "BSXFlags");
+
+            // The name is what the engine looks the block up by, so it is fixed.
+            Assert.Equal("BSX", rebuilt.GetString(bsx, "Name"));
+        }
+
+        [Fact]
+        public void TheImportersValueDescribesWhatItBuilt()
+        {
+            NifModel rebuilt = RoundTrip("generate_rb_box.nif");
+
+            // Recalculated from the rebuilt graph rather than copied from the source,
+            // so it has to agree with that graph -- and the block describing the file
+            // must not itself change the answer.
+            Assert.Equal(rebuilt.Calculate(), Stored(rebuilt));
+
+            // A box with one rigid body: Havok, and one collision, so a single chain.
+            Assert.NotEqual(0u, Stored(rebuilt) & (1u << NifBsxFlags.Bit.Havok));
+            Assert.NotEqual(0u, Stored(rebuilt) & (1u << NifBsxFlags.Bit.SingleChain));
+            Assert.Equal(0u, Stored(rebuilt) & (1u << NifBsxFlags.Bit.MultipleCollisions));
+        }
+
+        [Fact]
+        public void TheImporterKeepsItToOne()
+        {
+            // The source already has a BSXFlags. Carrying that one across as well
+            // would leave the file with two, and the engine reads the first it finds.
+            NifModel rebuilt = RoundTrip("generate_rb_box.nif");
+
+            Assert.Single(rebuilt.Blocks, b => b.Name == "BSXFlags");
         }
     }
 }
