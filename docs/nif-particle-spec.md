@@ -216,7 +216,7 @@ It is worth naming as a possible *preview* addition, not as the carrier.
 | **A.** Nothing — ck-cmd | no | no | n/a | no |
 | **B.** Flat custom properties on the system's node | yes | no | poorly: one long list | exactly |
 | **C.** B, plus connections for the node links | yes | yes | poorly | exactly |
-| **D.** A `Null` per modifier, each with its own properties and connections | yes | yes | well: the stack is a subtree | exactly |
+| **D.** A `Null` per modifier, each with its own properties | yes | yes | well: the stack is a subtree | exactly |
 
 ---
 
@@ -385,20 +385,33 @@ target only because it is the pipeline se-cmd already speaks.
 
 ## 8. Where se-cmd stands
 
-se-cmd implements **C** (`Fbx/FbxParticleWriter.cs`, `Nif/NifParticleWriter.cs`): the
-system block, its data block and its modifier stack in order, as prefixed string
-properties on the node that already stands for the system, **plus the links**. The node
-keeps its name, transform and animation; no geometry is invented for it. Everything in
-§2.2 and §3 survives a round trip.
+se-cmd implements **D** (`Fbx/FbxParticleWriter.cs`, `Nif/NifParticleWriter.cs`): the
+system block and its data block as prefixed string properties on the node that already
+stands for the system, and the modifier stack as **one empty node per modifier** under
+it, in order, each carrying its own fields and links. The node keeps its name, transform
+and animation; no geometry is invented for it. Everything in §2.2 and §3 survives a
+round trip.
+
+Putting the stack in the tree costs nothing in fidelity and buys two things. A rigger
+opening an outliner sees eleven named modifiers rather than one node with a hundred
+properties on it — the fixture's system node went from 249 properties to 56 — and
+**sibling order is stack order**, so moving one moves it in the file. The engine's own
+ordering still comes from each modifier's `Order` field (§3), carried like any other,
+with array position breaking its ties.
+
+Each modifier's NIF name is carried beside the node's own, because the node name goes
+through FBX's naming rules — `NiPSysAgeDeath:2` becomes `NiPSysAgeDeath_dd_2` — while
+the NIF name is what a controller binds to (§4).
 
 ### 8.1 How the links are carried
 
-By the name of what they point at, under the field's own key plus `_ref`:
+By the name of what they point at, under the field's own key plus `_ref`, on the
+modifier that holds the link:
 
 ```
-npsm_2_emitter_object_ref = "PCloud06-Emitter"
-npsm_8_gravity_object_ref = "Gravity01"
-npsm_0_spawn_modifier_ref = "NiPSysSpawnModifier:1"
+NiPSysCylinderEmitter    emitter_object_ref = "PCloud06-Emitter"
+NiPSysGravityModifier    gravity_object_ref = "Gravity01"
+NiPSysAgeDeathModifier   spawn_modifier_ref = "NiPSysSpawnModifier:1"
 ```
 
 A property rather than the object-to-object connection this section first proposed. A
@@ -420,12 +433,6 @@ rebuilt, and naming them as well would give two sources for one fact.
 A name that resolves to nothing is reported. Silence would mean an emitter emitting
 from the origin, or gravity pulling towards it, with nothing in the file to say why.
 
-**D is better ergonomics for the same information.** A `Null` per modifier would put the
-stack in the outliner where a rigger could see and reorder it, and would shorten the
-property names from `npsm_7_frame_count` to `frame_count`. It is a larger change and
-buys nothing in fidelity over C, so it is worth doing only if editing particle stacks in
-a DCC tool becomes a goal rather than transporting them.
-
 ### 8.2 What the survey changes, and what it does not
 
 §7 establishes that FBX is the weakest of the surveyed formats for this: worse than USD
@@ -446,7 +453,8 @@ survives in the FBX intact.
 
 So the survey's practical consequences are narrower than its conclusions:
 
-- **C is done** (§8.1). The dropped links were the last real loss.
+- **C and D are done** (§8). The dropped links were the last real loss; the stack is
+  now a subtree rather than a property list.
 - **If a USD path is ever added** for other reasons, the particle system should move to
   a codeless custom schema rather than being re-encoded as strings. §7.2's argument is
   that the same information becomes typed and validated for no extra work, and the
