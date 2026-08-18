@@ -39,6 +39,9 @@ namespace SECmd.Conversion
         /// <summary>Rebuild the scene's animation stacks as NIF controller sequences.</summary>
         public bool ImportAnimation { get; set; } = true;
 
+        /// <summary>Rebuild Havok constraints from the scene's attachment points.</summary>
+        public bool ImportConstraints { get; set; } = true;
+
         /// <summary>The Bethesda stream version implied by the target edition.</summary>
         public uint BSVersion => LegendaryEdition ? 83u : 100u;
     }
@@ -111,6 +114,10 @@ namespace SECmd.Conversion
             // they can only be resolved once the whole tree exists.
             BuildPendingSkins(root);
 
+            // Constraints join two bodies, so they wait until every body exists.
+            if (_options.ImportConstraints)
+                _model.WriteConstraints(_scene.ReadConstraints(), _bodiesByName, Warnings);
+
             // Animation last of all, for the same reason: a track names the node it
             // moves, and the manager has to list blocks that already exist.
             if (_options.ImportAnimation)
@@ -162,6 +169,11 @@ namespace SECmd.Conversion
                 return;
             }
 
+            // An attachment point is a marker, not a node: it says where a joint is
+            // and is rebuilt as part of the body that owns it.
+            if (FbxConstraintReader.IsAttachmentPoint(model))
+                return;
+
             NifItem node = _model.InsertBlock("NiNode");
             _model.SetString(node, "Name", name);
             _model.SetTransform(node, transform);
@@ -189,6 +201,9 @@ namespace SECmd.Conversion
 
         /// <summary>Collision bodies seen since <paramref name="mark"/>, awaiting a node to attach to.</summary>
         private readonly List<FbxObject> _pendingCollision = [];
+
+        /// <summary>The rigid bodies built so far, by the node name they came from.</summary>
+        private readonly Dictionary<string, NifItem> _bodiesByName = new(StringComparer.Ordinal);
 
         /// <summary>
         /// Builds the collision object for a node from any bodies found beneath it.
@@ -248,6 +263,9 @@ namespace SECmd.Conversion
 
             // bhkRigidBodyT applies its own transform; the plain body ignores it.
             NifItem body = _model.InsertBlock("bhkRigidBodyT");
+
+            // A constraint names the bodies it joins by the node they came from.
+            _bodiesByName[name] = body;
 
             _model.SetRef(body, "Shape", shape);
             WriteBodyTransform(body, bodyNode);
