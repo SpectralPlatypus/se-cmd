@@ -98,14 +98,48 @@ namespace SECmd.Tests
 
             Assert.NotEmpty(fields);
 
-            // A block index means nothing once exported, so a modifier's target or a
-            // system's data and shader property are never carried as values. What
-            // they pointed at is said by the structure or not at all.
-            Assert.DoesNotContain(fields, n =>
-                n.EndsWith("_data", StringComparison.Ordinal)
-                || n.EndsWith("_target", StringComparison.Ordinal)
-                || n.EndsWith("_shader_property", StringComparison.Ordinal)
-                || n.EndsWith("_gravity_object", StringComparison.Ordinal));
+            // A block index means nothing once exported, so no link is ever carried
+            // as a value. What it pointed at is carried by name instead, under a
+            // separate property.
+            Assert.DoesNotContain(
+                fields.Where(n => !n.EndsWith(FbxParticleWriter.LinkSuffix, StringComparison.Ordinal)),
+                n => n.EndsWith("_data", StringComparison.Ordinal)
+                    || n.EndsWith("_target", StringComparison.Ordinal)
+                    || n.EndsWith("_shader_property", StringComparison.Ordinal)
+                    || n.EndsWith("_gravity_object", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void LinksAreCarriedByTheNameOfWhatTheyPointedAt()
+        {
+            FbxObject node = Node();
+
+            var refs = node.Properties.All
+                .Select(p => p.Name)
+                .Where(n => n.EndsWith(FbxParticleWriter.LinkSuffix, StringComparison.Ordinal))
+                .ToList();
+
+            // Exactly the three the fixture has: an emitter's node, a gravity
+            // modifier's node, and one modifier naming another.
+            Assert.Equal(3, refs.Count);
+
+            Assert.Equal("PCloud06-Emitter", node.Properties.GetString("npsm_2_emitter_object_ref"));
+            Assert.Equal("Gravity01", node.Properties.GetString("npsm_8_gravity_object_ref"));
+            Assert.Equal("NiPSysSpawnModifier:1", node.Properties.GetString("npsm_0_spawn_modifier_ref"));
+        }
+
+        [Fact]
+        public void StructuralLinksAreNotNamed()
+        {
+            FbxObject node = Node();
+
+            // The system's data, its modifier list and each modifier's pointer back
+            // to it all follow from the structure being rebuilt. Naming them as well
+            // would give two sources for one fact.
+            Assert.DoesNotContain(node.Properties.All, p =>
+                p.Name.EndsWith($"_target{FbxParticleWriter.LinkSuffix}", StringComparison.Ordinal)
+                || p.Name.EndsWith($"_data{FbxParticleWriter.LinkSuffix}", StringComparison.Ordinal)
+                || p.Name.EndsWith($"_modifiers{FbxParticleWriter.LinkSuffix}", StringComparison.Ordinal));
         }
 
         // --- rebuilding --------------------------------------------------------
@@ -155,6 +189,78 @@ namespace SECmd.Tests
             Assert.All(
                 model.GetRefArray(system, "Modifiers"),
                 m => Assert.Equal(system, model.GetRef(m, "Target")));
+        }
+
+        [Fact]
+        public void EmitterAndGravityObjectsAreWiredBackUp()
+        {
+            (NifModel model, List<string> warnings) = RoundTrip();
+
+            NifItem system = model.Blocks.First(b => b.Name == "NiParticleSystem");
+            var modifiers = model.GetRefArray(system, "Modifiers").ToList();
+
+            NifItem emitter = modifiers.First(m => m.Name == "NiPSysCylinderEmitter");
+            NifItem gravity = modifiers.First(m => m.Name == "NiPSysGravityModifier");
+
+            // An emitter that lost its emitter object emits from the origin, and a
+            // gravity modifier that lost its gravity object pulls towards it. Neither
+            // shows up as anything but the effect being wrong.
+            Assert.Equal(
+                "PCloud06-Emitter",
+                model.GetName(model.GetBlock(model.FindItem(emitter, "Emitter Object")!)!));
+
+            Assert.Equal(
+                "Gravity01",
+                model.GetName(model.GetBlock(model.FindItem(gravity, "Gravity Object")!)!));
+
+            Assert.Empty(warnings);
+        }
+
+        [Fact]
+        public void OneModifierCanNameAnother()
+        {
+            (NifModel model, _) = RoundTrip();
+
+            NifItem system = model.Blocks.First(b => b.Name == "NiParticleSystem");
+            var modifiers = model.GetRefArray(system, "Modifiers").ToList();
+
+            NifItem ageDeath = modifiers.First(m => m.Name == "NiPSysAgeDeathModifier");
+            NifItem spawn = model.GetBlock(model.FindItem(ageDeath, "Spawn Modifier")!)!;
+
+            // Resolvable the moment the stack exists, unlike a link to a node, which
+            // has to wait for the rest of the tree.
+            Assert.Equal("NiPSysSpawnModifier", spawn.Name);
+            Assert.Contains(spawn, modifiers);
+        }
+
+        [Fact]
+        public void ALinkNamingAMissingNodeIsReported()
+        {
+            FbxDocument document = FbxDocumentTemplate.CreateEmpty();
+            var scene = new FbxScene(document);
+
+            FbxObject root = FbxMeshWriter.AddModel(scene, "root", "Null", NifTransform.Identity);
+            scene.ConnectToRoot(root);
+
+            FbxObject node = FbxMeshWriter.AddModel(scene, "Cloud", "Null", NifTransform.Identity);
+            scene.Connect(node, root);
+
+            node.Properties.SetUserString(FbxParticleWriter.TypeProperty, "NiParticleSystem");
+            node.Properties.SetUserString(FbxParticleWriter.ModifierCountProperty, "1");
+            node.Properties.SetUserString($"{FbxParticleWriter.ModifierPrefix}0_type", "NiPSysGravityModifier");
+            node.Properties.SetUserString($"{FbxParticleWriter.ModifierPrefix}0_name", "grav");
+            node.Properties.SetUserString($"{FbxParticleWriter.ModifierPrefix}0_gravity_object_ref", "Nowhere");
+            scene.Flush();
+
+            var converter = new FbxToNif(new FbxScene(document), new FbxToNifOptions { RootName = "test" });
+            NifModel model = converter.Convert(Db);
+
+            // Silence here would mean an effect that pulls towards the origin and no
+            // way to find out why.
+            Assert.Contains(converter.Warnings, w => w.Contains("Nowhere", StringComparison.Ordinal));
+
+            NifItem gravity = model.Blocks.First(b => b.Name == "NiPSysGravityModifier");
+            Assert.Null(model.GetBlock(model.FindItem(gravity, "Gravity Object")!));
         }
 
         [Fact]
