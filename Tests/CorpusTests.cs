@@ -46,7 +46,8 @@ namespace SECmd.Tests
             return data;
         }
 
-        private static IEnumerable<string> FixturePaths() =>
+        /// <summary>The same list as <see cref="AllFixtures"/>, as plain strings.</summary>
+        public static IEnumerable<string> FixturePaths() =>
             Directory
                 .GetFiles(ResourceRoot, "*.nif", SearchOption.AllDirectories)
                 .OrderBy(f => f, StringComparer.Ordinal)
