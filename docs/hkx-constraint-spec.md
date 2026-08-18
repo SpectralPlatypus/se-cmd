@@ -1,6 +1,6 @@
 # Constraint round trip, as ck-cmd implements it
 
-Extracted from ck-cmd at `/home/ecanepa/Dev/ck-cmd`:
+Extracted from [ck-cmd](https://github.com/aerisarn/ck-cmd), from three places:
 
 - `src/core/FBXWrangler.cpp` — the NIF → FBX direction (`FbxConstraintBuilder`,
   L2054–2312).
@@ -8,6 +8,8 @@ Extracted from ck-cmd at `/home/ecanepa/Dev/ck-cmd`:
   L2811–2910; `isConstraintFbxNode`, L146).
 - `src/core/FBXWrangler.cpp` again — the Havok → NIF direction (`buildConstraints`,
   L5184; `convert_from_hk`, L4985–5088).
+
+Line references are to ck-cmd at the checkout used for extraction.
 
 The three directions form a loop, and only one of them is direct:
 
