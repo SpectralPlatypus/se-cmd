@@ -182,6 +182,14 @@ namespace SECmd.Conversion
             AddBsxFlags(root);
 
             _model.SetRoots([root]);
+
+            // Block order is not free: a Havok block has to come before whatever
+            // references it, which is the reverse of every other block, and a
+            // constraint after the bodies it joins. Every mesh the game ships obeys
+            // this and a file built by walking a scene does not, so the blocks are put
+            // in order before the header is written -- the header records their types
+            // in order, so this has to happen first.
+            _model.ReorderBlocks(NifBlockOrder.Sorted(_model));
             _model.UpdateHeader();
 
             return _model;

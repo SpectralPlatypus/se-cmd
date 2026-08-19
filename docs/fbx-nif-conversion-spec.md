@@ -1194,6 +1194,39 @@ shifts by `-start`.
 
 ---
 
+## 5B. Block order
+
+A NIF does not store its blocks in any order. A Havok block has to come **before**
+whatever references it — the reverse of every other block — and a constraint after the
+bodies it joins. Every mesh the game ships obeys this, and a file built by walking a
+scene and appending blocks as it goes does not: before this was fixed, every rebuilt
+file with collision was wrong, 24 places on a skeleton.
+
+The rule is NifSkope's `spSanitizeBlockOrder` (`src/spells/sanitize.cpp`), which is the
+only written-down statement of it there is. Walk from the roots; for each block emit
+first the referenced blocks that belong before it, then the block, then the rest. A
+constraint's *entities* come first of all, since they are pointers and the reference walk
+never reaches them.
+
+**One correction to that rule.** NifSkope tests `bhkRefObject && !bhkConstraint`, and a
+`bhkBallSocketConstraintChain` inherits `bhkSerializable` rather than `bhkConstraint` —
+so the rule as written puts a chain *before* the body referencing it, and
+`TestNifFile_DeepGraph_SE.nif` has it after. The principle underneath is that a thing
+which joins bodies comes after them, and a chain joins bodies whatever it inherits from.
+It is recognised by carrying a `bhkConstraintChainCInfo`, rather than by naming every
+class that might be one.
+
+Reordering renumbers, so every link in the file is remapped in one pass, the footer's
+roots included, and the new order must be a permutation of the old — a dropped block
+would leave links pointing at whatever moved into its place. It runs before the header
+is written, since the header records the block types in order.
+
+The check is worth having in both directions: the fixture test asserts the *shipped*
+files satisfy it, which is what caught the constraint chain. A rule only tested against
+its own output tests nothing.
+
+---
+
 ## 6. Traversal invariants
 
 Both directions depend on ordering that is easy to lose:
