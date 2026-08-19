@@ -749,6 +749,7 @@ namespace SECmd.Conversion
             // Which geometry class this was. BSDynamicTriShape and BSTriShape hold the
             // same vertices and are not the same thing to the engine.
             FbxNodeType.Write(geometry, shape);
+            FbxDynamicShape.Write(geometry, _model, shape);
             scene.Connect(geometry, holder);
 
             ConvertSkin(scene, shape, geometry);
@@ -973,6 +974,38 @@ namespace SECmd.Conversion
         /// fields, X alongside the position and Y and Z alongside the normal and
         /// tangent, because it is packed into the spare lanes of those vectors.
         /// </remarks>
+        /// <summary>
+        /// A dynamic shape's own vertex buffer, when it has one worth reading.
+        /// </summary>
+        /// <remarks>
+        /// `BSDynamicTriShape` carries a second array of positions that the engine
+        /// rewrites as the mesh moves. In the files seen it is not a copy of the
+        /// static ones — those are zero, and this is where the shape actually is.
+        ///
+        /// Null when the shape has no such buffer, or when it does not line up with
+        /// the vertex data, since a mismatched buffer says less than the static
+        /// positions do.
+        /// </remarks>
+        private List<NifVector3>? DynamicPositions(NifItem shape, int count)
+        {
+            if (!_model.BlockInherits(shape, "BSDynamicTriShape")
+                || _model.FindItem(shape, "Vertices") is not { } buffer
+                || buffer.Children.Count != count)
+            {
+                return null;
+            }
+
+            var positions = new List<NifVector3>(count);
+
+            foreach (NifItem vertex in buffer.Children)
+            {
+                NifVector4 v = vertex.Value.Get<NifVector4>();
+                positions.Add(new NifVector3(v.X, v.Y, v.Z));
+            }
+
+            return positions;
+        }
+
         private MeshGeometry? ReadBsTriShapeGeometry(NifItem shape)
         {
             NifItem? vertexData = _model.FindItem(shape, "Vertex Data");
@@ -1033,9 +1066,21 @@ namespace SECmd.Conversion
             bool hasUvs = _model.FindItem(first, "UV") is not null;
             bool hasColors = _model.FindItem(first, "Vertex Colors") is not null;
 
-            foreach (NifItem vertex in vertexData.Children)
+            // A dynamic shape keeps its positions in the buffer the engine writes
+            // into every frame, and the static entries beside them are zero. Reading
+            // those instead collapses the whole mesh onto the origin -- 136 vertices
+            // all in one place -- with the right counts throughout, so nothing about
+            // the file looks wrong.
+            List<NifVector3>? dynamic = DynamicPositions(shape, vertexData.Children.Count);
+
+            for (int i = 0; i < vertexData.Children.Count; i++)
             {
-                NifVector3 position = _model.FindItem(vertex, "Vertex")?.Value.Get<NifVector3>() ?? new NifVector3();
+                NifItem vertex = vertexData.Children[i];
+
+                NifVector3 position = dynamic is not null
+                    ? dynamic[i]
+                    : _model.FindItem(vertex, "Vertex")?.Value.Get<NifVector3>() ?? new NifVector3();
+
                 mesh.Vertices.Add(transform.Apply(position));
 
                 if (hasNormals)

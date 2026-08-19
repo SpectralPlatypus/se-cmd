@@ -625,22 +625,27 @@ ones.
 This mirrors the collision material (§4.8), which is likewise both a name a DCC tool can
 edit and an exact value on reimport.
 
-#### 5.3.3 Known gap: BSDynamicTriShape
+#### 5.3.3 Dynamic shapes
 
-A dynamic shape is rebuilt as a plain `BSTriShape`, and deliberately so.
+`BSDynamicTriShape` keeps a second array of four-float vertices that the engine rewrites
+as the mesh moves — a cloak, a hanging chain. In the files seen it is **not** a copy of
+the static positions: those are zero, and the dynamic buffer is where the shape actually
+is. A skinned dynamic shape has no `Vertex Data` array at all, since `Data Size` is zero
+and the field is conditional on it.
 
-`BSDynamicTriShape` keeps a second vertex buffer — `Vertices`, four floats each, sized
-by `Dynamic Data Size` — which the engine writes into every frame, and which is how a
-cloak or a hanging chain moves. In the files examined it is not a *copy* of the static
-positions: the shape has **no `Vertex Data` array at all**, and the dynamic buffer is
-where its positions live. The fourth component is populated (values around ±1, so
-plausibly a packed bitangent) and is not carried anywhere.
+That made the export wrong before it made the import wrong. Reading the static entries
+gave 136 vertices all at the origin — the whole mesh collapsed onto a point, with every
+count in the file correct, which is why nothing caught it. The positions are read from
+the dynamic buffer when there is one and it lines up with the vertex count.
 
-The export records the class like any other (§5.2 nodes), so rebuilding one is a
-one-line change. It was tried and reverted: the class came back correctly and the
-buffer came back empty, giving a dynamic shape with no vertices, which is worse than the
-static shape it replaced. Reproducing it needs the buffer carried across and the meaning
-of the fourth component settled first.
+Coming back, three of the four floats are the position and need no carrying: they are
+the mesh, and they travel as geometry. The fourth is carried as `dynamic_vertex_w`, one
+number per vertex.
+
+It is carried rather than derived on purpose. Its values sit in [-1, 1] and differ
+between vertices that *share* a position, which is what a tangent-frame component does
+at a seam — but that is an inference, and writing a guess into a buffer the engine reads
+every frame is worse than moving the number across without examining it.
 
 #### 5.3.1 Tangent space
 
@@ -1142,7 +1147,6 @@ Real gaps, each with its reason recorded where it bites.
 
 | What | Consequence | Where |
 | --- | --- | --- |
-| `BSDynamicTriShape`'s second vertex buffer | The class is rebuilt as a plain `BSTriShape`, since asking for a dynamic shape without the buffer gives one with no vertices at all | §5.3.3 |
 | A controller with no interpolator, outside a particle system | Not recognised as animation, and only particle systems carry these structurally so far | §5A.6, §4.9A |
 | Array order within a rebuilt convex hull | The vertices and planes agree, but arrive in the fit's order rather than Havok's, which nif.xml says is lexicographic | §5.7.1 |
 

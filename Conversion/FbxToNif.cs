@@ -1087,11 +1087,8 @@ namespace SECmd.Conversion
         /// </remarks>
         private NifItem BuildBsTriShape(FbxObject geometry, MeshGeometry mesh, bool skinned)
         {
-            // Deliberately not FbxNodeType.Read here: see the note in
-            // `docs/fbx-nif-conversion-spec.md` §5.3.3. A BSDynamicTriShape keeps its
-            // positions in a second buffer this does not rebuild, so asking for one
-            // produces a shape with no vertices at all.
-            NifItem shape = _model.InsertBlock("BSTriShape");
+            NifItem shape = _model.InsertBlock(
+                FbxNodeType.Read(geometry, _model, "BSTriShape", "BSTriShape"));
             _model.SetString(shape, "Name", NameEncoding.Unsanitize(geometry.Name));
 
             var descriptor = BuildVertexDescriptor(mesh, skinned);
@@ -1128,6 +1125,10 @@ namespace SECmd.Conversion
                 for (int i = 0; i < mesh.Triangles.Count && i < triangles.Children.Count; i++)
                     triangles.Children[i].Value.Set(mesh.Triangles[i]);
             }
+
+            // A dynamic shape's own buffer: the positions again, plus the fourth
+            // component that was carried because nothing here can derive it.
+            FbxDynamicShape.Read(geometry, _model, shape, mesh.Vertices);
 
             return shape;
         }

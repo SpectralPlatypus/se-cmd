@@ -336,6 +336,62 @@ namespace SECmd.Tests
         }
 
                 [Fact]
+        public void ADynamicShapeExportsWhereItActuallyIs()
+        {
+            // The bug this guards is not that the shape came back wrong -- it is that
+            // it went out wrong. A dynamic shape keeps its positions in the buffer the
+            // engine rewrites each frame, and the static entries beside them are zero,
+            // so reading those collapsed the whole mesh onto the origin. Every count
+            // was right, which is why nothing noticed.
+            NifModel source = Load("nifly/TestNifFile_Skinned_Dynamic_SE.nif");
+
+            var scene = new FbxScene(new NifToFbx(source).Convert());
+
+            FbxObject geometry = scene.Objects.First(o => o.Class == "Geometry");
+            MeshGeometry mesh = FbxMeshReader.Read(geometry, new FbxMeshReader.Options())!;
+
+            Assert.NotEmpty(mesh.Vertices);
+            Assert.Contains(mesh.Vertices, v => v.X != 0f || v.Y != 0f || v.Z != 0f);
+        }
+
+        [Fact]
+        public void ADynamicShapeKeepsItsClassAndItsBuffer()
+        {
+            NifModel source = Load("nifly/TestNifFile_Skinned_Dynamic_SE.nif");
+
+            NifItem before = source.Blocks.First(b => b.Name == "BSDynamicTriShape");
+
+            var expected = source.FindItem(before, "Vertices")!.Children
+                .Select(c => c.Value.Get<NifVector4>()).ToList();
+
+            Assert.NotEmpty(expected);
+
+            NifModel rebuilt = RoundTrip(source);
+
+            // The fixture has two, and they come back as two.
+            Assert.Equal(
+                source.Blocks.Count(b => b.Name == "BSDynamicTriShape"),
+                rebuilt.Blocks.Count(b => b.Name == "BSDynamicTriShape"));
+
+            NifItem after = rebuilt.Blocks.First(b => b.Name == "BSDynamicTriShape");
+
+            var actual = rebuilt.FindItem(after, "Vertices")!.Children
+                .Select(c => c.Value.Get<NifVector4>()).ToList();
+
+            Assert.Equal(expected.Count, actual.Count);
+
+            for (int i = 0; i < expected.Count; i++)
+            {
+                Assert.Equal(expected[i].X, actual[i].X, 3);
+                Assert.Equal(expected[i].Y, actual[i].Y, 3);
+                Assert.Equal(expected[i].Z, actual[i].Z, 3);
+
+                // The fourth component is carried rather than derived, so it is exact.
+                Assert.Equal(expected[i].W, actual[i].W, 5);
+            }
+        }
+
+                [Fact]
         public void AConstantTrackKeepsItsAbsentDataBlock()
         {
             // An interpolator holding a value and no data block is a real animation:
