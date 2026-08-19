@@ -76,12 +76,19 @@ namespace SECmd.Nif
             if (bones.Count == 0)
                 return missing;
 
-            // The class follows from the slots rather than being carried beside them.
-            // A body slot says which part of a body a partition is, and that is the
-            // whole of the difference between the two classes -- so a shape with slots
-            // is a dismember instance and a shape without one is not, and the two
-            // cannot disagree about it.
-            string type = skin.BodySlots.Count > 0 ? "BSDismemberSkinInstance" : fallbackInstanceType;
+            // The class the shape had, when the scene knows; otherwise the slots
+            // decide, and failing both the caller's default. An empty slot list is not
+            // enough on its own: a plain NiSkinInstance has none because its class has
+            // none, and a mesh from a DCC tool has none because nothing put them
+            // there, and those want different answers.
+            string type =
+                skin.InstanceType.Length > 0
+                && model.KnowsBlock(skin.InstanceType)
+                && model.Database.Inherits(skin.InstanceType, "NiSkinInstance")
+                    ? skin.InstanceType
+                    : skin.BodySlots.Count > 0
+                        ? "BSDismemberSkinInstance"
+                        : fallbackInstanceType;
 
             NifItem instance = model.InsertBlock(type);
             NifItem data = model.InsertBlock("NiSkinData");

@@ -37,6 +37,22 @@ namespace SECmd.Fbx
         /// <summary>Prefix on one slot, before its index.</summary>
         public const string SlotPrefix = "body_slot_";
 
+        /// <summary>
+        /// The property naming the shape's skin instance class.
+        /// </summary>
+        /// <remarks>
+        /// Carried alongside the slots rather than derived from them, because the
+        /// absence of slots means two different things. A shape that had a plain
+        /// `NiSkinInstance` has none because that class has none; a shape authored in
+        /// a DCC tool has none because nothing put them there. Deriving the class from
+        /// an empty list rebuilds the first as a dismember instance, which is the
+        /// thing this set out to fix.
+        ///
+        /// Slots remain the data; this is provenance, and it is only consulted when it
+        /// is there.
+        /// </remarks>
+        public const string InstanceTypeProperty = "nif_skin_instance";
+
         private const int SkinVersion = 101;
         private const int ClusterVersion = 100;
 
@@ -62,8 +78,11 @@ namespace SECmd.Fbx
 
             FbxObject skinObject = scene.AddObject("Deformer", geometry.Name + "_skin", "Skin");
 
+            // The class the shape had, when the scene came from a NIF at all.
+            if (skin.InstanceType.Length > 0)
+                skinObject.Properties.SetUserString(InstanceTypeProperty, skin.InstanceType);
+
             // The body slots, named rather than numbered so a reader can check them.
-            // The class follows from these, so nothing else about it is written.
             if (skin.BodySlots.Count > 0)
             {
                 skinObject.Properties.SetUserString(
@@ -140,7 +159,10 @@ namespace SECmd.Fbx
             if (skinObject is null)
                 return null;
 
-            var skin = new SkinData();
+            var skin = new SkinData
+            {
+                InstanceType = skinObject.Properties.GetString(InstanceTypeProperty)
+            };
 
             if (int.TryParse(
                     skinObject.Properties.GetString(SlotCountProperty),
