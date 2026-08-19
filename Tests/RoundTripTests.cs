@@ -336,6 +336,26 @@ namespace SECmd.Tests
         }
 
                 [Fact]
+        public void ASkinKeepsTheInstanceClassItHad()
+        {
+            // Nothing about a mesh decides between these. A dismember instance carries
+            // body-part slots -- what lets a cuirass hide the body under it -- and the
+            // game ships 15,728 of those against 11,212 plain ones, with no version or
+            // folder separating them. So it is carried, not guessed: rebuilding every
+            // skin as the dismember form was the single largest difference across the
+            // game's meshes.
+            NifModel source = Load("nifly/TestNifFile_Skinned_SE.nif");
+
+            NifItem before = source.Blocks.First(b => source.BlockInherits(b, "NiSkinInstance"));
+
+            NifModel rebuilt = RoundTrip(source);
+
+            NifItem after = rebuilt.Blocks.First(b => rebuilt.BlockInherits(b, "NiSkinInstance"));
+
+            Assert.Equal(before.Name, after.Name);
+        }
+
+                [Fact]
         public void ADynamicShapeExportsWhereItActuallyIs()
         {
             // The bug this guards is not that the shape came back wrong -- it is that

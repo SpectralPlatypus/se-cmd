@@ -33,6 +33,21 @@ namespace SECmd.Conversion
         /// <summary>The node the bone transforms are relative to.</summary>
         public string SkeletonRoot { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Which skin instance class the shape used.
+        /// </summary>
+        /// <remarks>
+        /// A `BSDismemberSkinInstance` carries body-part partitions on top of a plain
+        /// `NiSkinInstance`, and the two are not interchangeable: the dismember form is
+        /// what lets armour hide the body under it. Rebuilding every skin as the
+        /// dismember form gives that machinery to shapes that never had it, which is
+        /// the most common single difference across the game's meshes.
+        ///
+        /// Empty when the scene did not say, in which case the import picks the form
+        /// that suits the edition.
+        /// </remarks>
+        public string InstanceType { get; set; } = string.Empty;
+
         /// <summary>The whole skin's transform, usually identity.</summary>
         public NifTransform SkinTransform { get; set; } = NifTransform.Identity;
 

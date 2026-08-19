@@ -46,7 +46,7 @@ namespace SECmd.Nif
             if (bones.Count == 0)
                 return null;
 
-            var result = new SkinData();
+            var result = new SkinData { InstanceType = skin.Name };
 
             if (model.GetRef(skin, "Skeleton Root") is { } root)
                 result.SkeletonRoot = model.GetName(root);

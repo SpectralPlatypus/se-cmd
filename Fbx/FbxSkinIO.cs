@@ -21,6 +21,9 @@ namespace SECmd.Fbx
     /// </remarks>
     public static class FbxSkinIO
     {
+        /// <summary>The property naming the shape's skin instance class.</summary>
+        public const string InstanceTypeProperty = "nif_skin_instance";
+
         private const int SkinVersion = 101;
         private const int ClusterVersion = 100;
 
@@ -45,6 +48,13 @@ namespace SECmd.Fbx
                 return problems;
 
             FbxObject skinObject = scene.AddObject("Deformer", geometry.Name + "_skin", "Skin");
+
+            // Which skin class the shape had. A dismember instance carries body-part
+            // partitions a plain one does not, and giving them to a shape that never
+            // had them is as wrong as taking them away.
+            if (skin.InstanceType.Length > 0)
+                skinObject.Properties.SetUserString(InstanceTypeProperty, skin.InstanceType);
+
             FbxNode node = skinObject.Node;
 
             node.Nodes.Add(new FbxNode("Version", SkinVersion));
@@ -104,7 +114,10 @@ namespace SECmd.Fbx
             if (skinObject is null)
                 return null;
 
-            var skin = new SkinData();
+            var skin = new SkinData
+            {
+                InstanceType = skinObject.Properties.GetString(InstanceTypeProperty)
+            };
 
             foreach (FbxObject cluster in scene.ChildrenOf(skinObject.Id)
                          .Where(o => o.Class == "Deformer" && o.SubClass == "Cluster"))

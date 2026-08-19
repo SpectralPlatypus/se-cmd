@@ -48,7 +48,8 @@ namespace SECmd.Nif
             IReadOnlyDictionary<string, NifItem> boneNodes,
             NifItem skeletonRoot,
             int vertexCount,
-            IReadOnlyList<NifTriangle> triangles)
+            IReadOnlyList<NifTriangle> triangles,
+            string fallbackInstanceType = "BSDismemberSkinInstance")
         {
             var missing = new List<string>();
 
@@ -75,7 +76,18 @@ namespace SECmd.Nif
             if (bones.Count == 0)
                 return missing;
 
-            NifItem instance = model.InsertBlock("BSDismemberSkinInstance");
+            // The class the shape had, when the scene said. A dismember instance
+            // carries body-part partitions a plain one does not -- that is what lets a
+            // cuirass hide the body beneath it -- so handing them to a shape that
+            // never had them is as wrong as taking them away. Absent an answer, the
+            // dismember form is the one Skyrim's own body parts use.
+            string type = skin.InstanceType.Length > 0
+                          && model.KnowsBlock(skin.InstanceType)
+                          && model.Database.Inherits(skin.InstanceType, "NiSkinInstance")
+                ? skin.InstanceType
+                : fallbackInstanceType;
+
+            NifItem instance = model.InsertBlock(type);
             NifItem data = model.InsertBlock("NiSkinData");
             NifItem partition = model.InsertBlock("NiSkinPartition");
 

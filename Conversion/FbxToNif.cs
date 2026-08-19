@@ -36,6 +36,26 @@ namespace SECmd.Conversion
         /// </remarks>
         public bool LegendaryEdition { get; set; }
 
+        /// <summary>
+        /// The skin instance class to build when the scene does not say which.
+        /// </summary>
+        /// <remarks>
+        /// Nothing about a mesh decides this. Across the 26,940 skinned shapes the game
+        /// ships, 15,728 are `BSDismemberSkinInstance` and 11,212 are plain
+        /// `NiSkinInstance`; the Bethesda version does not separate them, and neither
+        /// does the folder — `meshes/actors/character` alone holds 11,433 of the first
+        /// and 9,772 of the second. The difference is what the shape is *for*: a
+        /// dismember instance carries body-part slots, which is what lets a cuirass
+        /// hide the body under it and a limb come off.
+        ///
+        /// A scene converted from a NIF carries the answer and this is not consulted.
+        /// It decides only for an FBX authored elsewhere, where the dismember form is
+        /// the better guess: new Skyrim content is mostly armour and body parts, and a
+        /// shape that has slots it does not need is easier to live with than one that
+        /// needs slots it has not got.
+        /// </remarks>
+        public string SkinInstanceType { get; set; } = "BSDismemberSkinInstance";
+
         /// <summary>Rebuild the scene's animation stacks as NIF controller sequences.</summary>
         public bool ImportAnimation { get; set; } = true;
 
@@ -1050,7 +1070,9 @@ namespace SECmd.Conversion
         {
             foreach ((NifItem shape, SkinData skin, int vertexCount, var triangles) in _pendingSkins)
             {
-                var missing = _model.WriteSkin(shape, skin, _nodesByName, root, vertexCount, triangles);
+                var missing = _model.WriteSkin(
+                    shape, skin, _nodesByName, root, vertexCount, triangles,
+                    _options.SkinInstanceType);
 
                 foreach (string bone in missing)
                     Warnings.Add($"{_model.GetName(shape)}: no node named \"{bone}\", its influence is dropped");

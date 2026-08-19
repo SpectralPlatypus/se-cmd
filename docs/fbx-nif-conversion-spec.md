@@ -553,6 +553,33 @@ however alike they look.
 The indices mean nothing outside the file they came from, which is the only place they
 are read.
 
+#### 5.2.3 Which skin instance class
+
+`BSDismemberSkinInstance` carries body-part slots on top of a plain `NiSkinInstance`,
+and the two are not interchangeable: the slots are what let a cuirass hide the body
+under it and a limb come away. Rebuilding every skin as the dismember form was the
+single largest difference across the game's meshes.
+
+**Nothing about the mesh decides it.** Across the 26,940 skinned shapes Skyrim ships:
+
+| | Count |
+| --- | --- |
+| `BSDismemberSkinInstance` | 15,728 |
+| `NiSkinInstance` | 11,212 |
+
+- The Bethesda version does not separate them — every one of these is bsver 100.
+- The presence of dismember partitions correlates perfectly and says nothing: the field
+  only exists on that class.
+- The folder separates them in 214 of 237 directories, and fails on the one that
+  matters. `meshes/actors/character` holds 11,433 of the first and 9,772 of the second.
+
+The difference is what the shape is *for*, which is authorial intent, so it is carried
+as `nif_skin_instance` on the FBX skin deformer rather than derived. A scene that never
+was a NIF has no answer to carry, and `FbxToNifOptions.SkinInstanceType` decides — the
+dismember form by default, since new Skyrim content is mostly armour and body parts, and
+a shape with slots it does not need is easier to live with than one that needs slots it
+has not got.
+
 #### 5.3.0 Skinned SE vertex data
 
 `BSTriShape` packs everything about a vertex inline, and for a skinned shape that
@@ -1291,6 +1318,7 @@ Reproduced only where behaviour depends on them; otherwise fixed and noted.
 | L1984 | `setPropertyAnimationOnDefaultStack` calls `span.SetStart` where `SetStop` is meant |
 | L753, L760 | `vector<Triangle>& tris = vector<Triangle>(0)` binds a reference to a temporary |
 | §3 | `unsanitizeString` is not injective; a literal `_s_` in a name is corrupted |
+| L2818, L3096 | The skin path's dismember branch is commented out, so `export_skin` builds a plain `NiSkinInstance` and then casts it to `BSDismemberSkinInstanceRef` and dereferences `bsskin->partitions`. That cast yields NULL |
 | §5.2.2 | The FBX path handles no `BSMultiBound`. A multi-bound node comes back bounding nothing, and the engine culls against an empty volume. Fixed here |
 | §4.3.1 | The FBX path handles no `BSEffectShaderProperty`. Export casts the shader to `BSLightingShaderProperty` and takes the null, so the shape leaves with no material; import only ever builds a lighting shader. Handled elsewhere in ck-cmd, so this is a gap in the FBX path. Fixed here — see §5.3.2 |
 
