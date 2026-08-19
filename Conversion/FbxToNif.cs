@@ -85,6 +85,9 @@ namespace SECmd.Conversion
 
             // Named after the file rather than after any node in the scene (§5.2).
             _model.SetString(root, "Name", _options.RootName);
+
+            if (sceneRoots.Count == 1 && !HasGeometry(sceneRoots[0]))
+                FbxExtraDataWriter.ReadExtraData(sceneRoots[0], _model, root, Warnings);
             _nodesByName[_options.RootName] = root;
 
             var rootModels = sceneRoots;
@@ -168,7 +171,7 @@ namespace SECmd.Conversion
             _model.SetString(bsx, "Name", NifBsxFlags.BlockName);
             _model.FindItem(bsx, "Integer Data")?.Value.SetCount(flags);
 
-            AddExtraData(root, bsx);
+            FbxExtraDataWriter.Append(_model, root, [bsx]);
         }
 
         /// <summary>Appends one block to another's extra data list.</summary>
@@ -254,6 +257,8 @@ namespace SECmd.Conversion
             _model.SetString(node, "Name", name);
             _model.SetTransform(node, transform);
             _nodesByName[name] = node;
+
+            FbxExtraDataWriter.ReadExtraData(model, _model, node, Warnings);
 
             // Collision found under this node attaches to it rather than becoming a
             // child, so collect it before recursing into the real children.

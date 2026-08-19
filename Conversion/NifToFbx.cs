@@ -188,6 +188,11 @@ namespace SECmd.Conversion
 
             FbxNodeType.Write(node, block);
 
+            // Everything hanging off the node that FBX has no place for: behaviour
+            // graph paths, string data, bounds. BSXFlags is left out, since the import
+            // recalculates it.
+            FbxExtraDataWriter.AddExtraData(node, _model, block);
+
             // A particle system has no geometry to export -- its vertices are a
             // runtime buffer the file only sizes -- so it stays an empty node with
             // the system carried alongside it.

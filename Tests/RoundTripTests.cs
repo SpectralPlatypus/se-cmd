@@ -191,6 +191,45 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void ExtraDataSurvives()
+        {
+            // Almost every NIF has some, and none of it has an FBX equivalent: a
+            // behaviour graph path, a furniture marker, a string nothing else reads.
+            // Dropping it changes what the game does with the file and leaves nothing
+            // to see.
+            NifModel source = Load("nifly/TestNifFile_Animated_LE.nif");
+
+            var expected = source.Blocks
+                .Where(b => source.BlockInherits(b, "NiExtraData") && b.Name != "BSXFlags")
+                .GroupBy(b => b.Name)
+                .ToDictionary(g => g.Key, g => g.Count());
+
+            Assert.NotEmpty(expected);
+
+            NifModel rebuilt = RoundTrip(source);
+
+            foreach ((string type, int count) in expected)
+            {
+                Assert.Equal(count, rebuilt.Blocks.Count(b => b.Name == type));
+            }
+        }
+
+        [Fact]
+        public void TheCalculatedBsxFlagsIsNotCarriedAsWell()
+        {
+            // BSXFlags is extra data too, and is recalculated rather than carried --
+            // so carrying it here as well would leave the file with two, and the
+            // engine reads the first it finds.
+            NifModel source = Load("generate_rb_box.nif");
+
+            Assert.Single(source.Blocks, b => b.Name == "BSXFlags");
+
+            NifModel rebuilt = RoundTrip(source);
+
+            Assert.Single(rebuilt.Blocks, b => b.Name == "BSXFlags");
+        }
+
+                [Fact]
         public void SharedPropertyBlocksAreSharedAgain()
         {
             // Eight shapes pointing at two alpha properties came back with eight, and

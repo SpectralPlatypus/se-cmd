@@ -624,6 +624,24 @@ Node properties map back (L5380–5465):
 `NiFloatExtraDataController` via `handleInlineTracks`; `Visibility` produces a
 `NiVisController`.
 
+#### 5.4.1 What travels, and what does not
+
+Extra data rides on the node it hangs from, as `extra_data` (a count) and one `xd_<i>_`
+group per block, carrying the class, the name and every field through `NifFieldCodec`.
+A class the schema does not know, or one that is not `NiExtraData`, is reported and
+dropped rather than guessed at.
+
+`BSXFlags` is deliberately excluded in both directions. It is extra data like the rest,
+but it is recalculated from the rebuilt graph (§5.2, `bsxflags-spec.md`), so carrying it
+as well leaves the file with two — and the engine reads the first it finds.
+
+The rebuild appends rather than assigns, because the calculated `BSXFlags` is already on
+the root's list by the time this runs.
+
+Two fields are not carried. `Name` is written separately, and `Next Extra Data` is the
+older chain form that the list supersedes; a carried link would point into a block list
+that no longer has that block.
+
 ### 5.5 Skinning
 
 `convertSkins` → `Accessor<AccessSkin>` (L2811–3110). Produces `NiSkinInstance` +
