@@ -159,6 +159,38 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void AnSeShapeKeepsItsVertexLayoutAndGainsTangents()
+        {
+            // SE packs its vertices inline, and the descriptor says which attributes
+            // are in them and how wide one is. Getting it wrong does not fail loudly:
+            // the reader walks the buffer at the wrong stride and produces geometry
+            // that is merely wrong.
+            NifModel source = Load("nifly/TestNifFile_Static_SE.nif");
+            NifItem sourceShape = source.Blocks.First(b => source.BlockInherits(b, "BSTriShape"));
+
+            ulong descriptor = source.FindItem(sourceShape, "Vertex Desc")!.Value.ToUInt64();
+
+            NifModel rebuilt = RoundTrip(source);
+            NifItem rebuiltShape = rebuilt.Blocks.First(b => rebuilt.BlockInherits(b, "BSTriShape"));
+
+            Assert.Equal(descriptor, rebuilt.FindItem(rebuiltShape, "Vertex Desc")!.Value.ToUInt64());
+
+            NifItem sourceVertices = source.FindItem(sourceShape, "Vertex Data")!;
+            NifItem rebuiltVertices = rebuilt.FindItem(rebuiltShape, "Vertex Data")!;
+
+            Assert.Equal(sourceVertices.Children.Count, rebuiltVertices.Children.Count);
+
+            // Tangents are regenerated rather than carried, so they agree to about the
+            // precision the source stores them at rather than exactly.
+            NifVector3 expected = source.FindItem(sourceVertices.Children[0], "Tangent")!.Value.Get<NifVector3>();
+            NifVector3 actual = rebuilt.FindItem(rebuiltVertices.Children[0], "Tangent")!.Value.Get<NifVector3>();
+
+            Assert.Equal(expected.X, actual.X, 2);
+            Assert.Equal(expected.Y, actual.Y, 2);
+            Assert.Equal(expected.Z, actual.Z, 2);
+        }
+
+        [Fact]
         public void TheCollisionObjectKeepsItsFlags()
         {
             // bhkCOFlags says how the body and its node keep in step: SET_LOCAL reads
