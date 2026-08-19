@@ -896,6 +896,13 @@ namespace SECmd.Conversion
             if (!mesh.HasNormals)
                 mesh.RecalculateNormals();
 
+            // Normal maps are read in tangent space, so a shape without one is lit as
+            // though its normal map were flat. FBX may or may not carry tangents, and
+            // the ones it carries were split for FBX's own vertex layout, so they are
+            // regenerated here from the geometry that will actually be written.
+            if (mesh.HasUvs)
+                TangentSpace.Generate(mesh);
+
             // BSTriShape does not exist before Skyrim SE, so the edition decides
             // which geometry block to emit.
             NifItem shape = _options.LegendaryEdition
@@ -1116,6 +1123,9 @@ namespace SECmd.Conversion
             return (desc.Value, (int)offset);
         }
 
+        /// <summary><c>BSGeometryDataFlags</c> bit 12, which announces the tangents.</summary>
+        private const uint HasTangentsFlag = 0x1000;
+
         /// <summary>Fills a <c>NiTriShapeData</c> from the neutral mesh.</summary>
         private void WriteGeometryData(NifItem data, MeshGeometry mesh)
         {
@@ -1126,8 +1136,13 @@ namespace SECmd.Conversion
             // UV array's length expression reads it, so it has to be set before the
             // array is sized.
             uint uvSets = mesh.HasUvs ? 1u : 0u;
+
+            // Bit 12 announces the tangent arrays. Writing them without it leaves
+            // them in the file for nothing to read.
+            uint bsFlags = uvSets | (mesh.HasTangents ? HasTangentsFlag : 0u);
+
             SetCount(data, "Data Flags", uvSets);
-            SetCount(data, "BS Data Flags", uvSets);
+            SetCount(data, "BS Data Flags", bsFlags);
 
             SetBool(data, "Has Normals", mesh.HasNormals);
             SetBool(data, "Has Vertex Colors", mesh.HasColors);
@@ -1136,6 +1151,12 @@ namespace SECmd.Conversion
 
             if (mesh.HasNormals)
                 WriteVector3Array(data, "Normals", mesh.Normals);
+
+            if (mesh.HasTangents)
+            {
+                WriteVector3Array(data, "Tangents", mesh.Tangents);
+                WriteVector3Array(data, "Bitangents", mesh.Bitangents);
+            }
 
             if (mesh.HasColors && _model.FindItem(data, "Vertex Colors") is { } colors)
             {

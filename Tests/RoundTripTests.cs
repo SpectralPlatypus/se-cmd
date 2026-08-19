@@ -82,9 +82,6 @@ namespace SECmd.Tests
             ["Force Collided Onto PPU"] = "uninitialised in the source file (0xCD)",
 
             // Real gaps, each its own piece of work.
-            ["BS Data Flags"] = "tangents are not rebuilt, so the flag that announces them is not set",
-            ["Tangents"] = "tangent space is not rebuilt on import",
-            ["Bitangents"] = "tangent space is not rebuilt on import",
             ["Consistency Flags"] = "not carried",
             ["Shader Flags 2"] = "one flag differs; the shader flag words are not carried verbatim",
             ["Bounding Sphere"] = "recomputed rather than carried",
