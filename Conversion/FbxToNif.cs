@@ -608,7 +608,12 @@ namespace SECmd.Conversion
         /// Finds the shape beneath a body node and fits a Havok primitive to it,
         /// choosing which by the node's name suffix.
         /// </summary>
-        private NifItem? BuildShapeFrom(FbxObject parent, string parentName, int depth = 0)
+        /// <param name="only">
+        /// Build from this child alone, so a container can take its children one at a
+        /// time rather than stopping at the first that yields a shape.
+        /// </param>
+        private NifItem? BuildShapeFrom(
+            FbxObject parent, string parentName, int depth = 0, FbxObject? only = null)
         {
             if (depth > 16)
             {
@@ -616,19 +621,38 @@ namespace SECmd.Conversion
                 return null;
             }
 
-            foreach (FbxObject child in _scene.ChildrenOf(parent.Id).Where(o => o.Class == "Model"))
+            IEnumerable<FbxObject> candidates = only is not null
+                ? [only]
+                : _scene.ChildrenOf(parent.Id).Where(o => o.Class == "Model");
+
+            foreach (FbxObject child in candidates)
             {
                 string name = NameEncoding.Unsanitize(child.Name);
 
-                // Containers pass straight through: the tree they describe is
-                // rebuilt by Havok, so only the leaf shape matters here.
-                if (name.EndsWith("_transform", StringComparison.Ordinal)
-                    || name.EndsWith("_list", StringComparison.Ordinal)
-                    || name.EndsWith("_convex_list", StringComparison.Ordinal)
-                    || name.EndsWith("_mopp", StringComparison.Ordinal))
+                // A container holds a tree, and the tree is the shape. ck-cmd
+                // rebuilds these from the Havok body it fits to the geometry; there is
+                // no Havok here, but the FBX node structure says the same thing and
+                // says it more directly.
+                if (IsPassThrough(name))
                 {
-                    if (BuildShapeFrom(child, name, depth + 1) is { } nested)
-                        return nested;
+                    // A MOPP tree is an index over the shape below it, and its code is
+                    // generated rather than carried, so the wrapper is walked through
+                    // and the shape underneath is what comes back.
+                    if (BuildShapeFrom(child, name, depth + 1) is { } inner)
+                        return inner;
+
+                    continue;
+                }
+
+                if (ContainerFor(name) is { } suffixed)
+                {
+                    // The suffix narrows it to a family; the carried class says which
+                    // member, since a transform shape and a convex transform shape
+                    // share a suffix.
+                    string container = FbxNodeType.Read(child, _model, suffixed, "bhkShape");
+
+                    if (BuildContainer(container, child, name, depth) is { } rebuilt)
+                        return rebuilt;
 
                     continue;
                 }
@@ -663,6 +687,91 @@ namespace SECmd.Conversion
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Whether a container is walked through rather than rebuilt.
+        /// </summary>
+        /// <remarks>
+        /// Only the MOPP tree. Its code has to be generated -- an empty wrapper cannot
+        /// even be written -- and the compressed mesh path makes one properly when it
+        /// needs it, so nothing is lost by passing through here.
+        /// </remarks>
+        private static bool IsPassThrough(string name) =>
+            name.EndsWith("_mopp", StringComparison.Ordinal);
+
+        /// <summary>The block a container node stands for, or null when it is not one.</summary>
+        private static string? ContainerFor(string name) => name switch
+        {
+            _ when name.EndsWith("_convex_list", StringComparison.Ordinal) => "bhkConvexListShape",
+            _ when name.EndsWith("_list", StringComparison.Ordinal) => "bhkListShape",
+
+            _ when name.EndsWith("_transform", StringComparison.Ordinal) => "bhkTransformShape",
+            _ => null
+        };
+
+        /// <summary>
+        /// Rebuilds a container shape and everything under it.
+        /// </summary>
+        /// <remarks>
+        /// The old behaviour was to walk through a container and return the first leaf
+        /// it found, on the grounds that Havok would rebuild the tree. Havok is not
+        /// here, and a list shape with six boxes came back as one box -- five sixths of
+        /// the collision gone, with the shape that remained the right shape.
+        ///
+        /// A list keeps every child. A MOPP tree and a transform shape wrap one, and a
+        /// MOPP's data is regenerated rather than carried, so the wrapper is all there
+        /// is to rebuild.
+        /// </remarks>
+        private NifItem? BuildContainer(string type, FbxObject node, string name, int depth)
+        {
+            var children = new List<NifItem>();
+
+            foreach (FbxObject child in _scene.ChildrenOf(node.Id).Where(o => o.Class == "Model"))
+            {
+                // One child at a time, so a list keeps all of them rather than the
+                // first: BuildShapeFrom stops at the first shape it can build.
+                if (BuildShapeFrom(node, name, depth + 1, only: child) is { } built)
+                    children.Add(built);
+            }
+
+            if (children.Count == 0)
+                return null;
+
+            if (!_model.KnowsBlock(type))
+                return children[0];
+
+            NifItem container = _model.InsertBlock(type);
+
+            if (type is "bhkListShape" or "bhkConvexListShape")
+            {
+                if (_model.SetArraySize(container, "Num Sub Shapes", "Sub Shapes", children.Count)
+                    is { } subShapes)
+                {
+                    for (int i = 0; i < children.Count && i < subShapes.Children.Count; i++)
+                        subShapes.Children[i].Value.SetLink(_model.IndexOf(children[i]));
+                }
+
+                // A list carries the material of what it holds, which the shapes
+                // themselves already know; the first is as good an answer as any and
+                // is what the source has when they agree, which is the only case
+                // ck-cmd accepts without a warning.
+                if (FbxCollisionMaterial.MaterialField(children[0]) is { } material)
+                    FbxCollisionMaterial.MaterialField(container)?.Value.SetCount(material.Value.ToUInt());
+            }
+            else
+            {
+                _model.SetRef(container, "Shape", children[0]);
+
+                if (children.Count > 1)
+                {
+                    Warnings.Add(
+                        $"{name}: a {type} holds one shape and this node has {children.Count}, "
+                        + "the rest are dropped");
+                }
+            }
+
+            return container;
         }
 
         /// <summary>

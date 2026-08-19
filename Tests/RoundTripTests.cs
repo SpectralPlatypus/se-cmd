@@ -419,6 +419,38 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void EveryCollisionShapeSurvives()
+        {
+            // A container held a tree and the import returned the first leaf it found,
+            // on the grounds that Havok rebuilds the tree. Havok is not here, so a
+            // list of six boxes came back as one box: five sixths of the collision
+            // gone, and the sixth exactly right.
+            //
+            // No fixture has a bhkListShape or a transform shape, so the containers
+            // themselves are only exercised by the corpus sweep -- which is where the
+            // loss showed up, and where fixing it took the divergent count from 121 to
+            // 92. This guards the shapes the fixtures do have.
+            NifModel source = Load("nifly/TestNifFile_Furniture_Col_SE.nif");
+
+            var expected = source.Blocks
+                .Where(b => source.BlockInherits(b, "bhkShape"))
+                .GroupBy(b => b.Name)
+                .ToDictionary(g => g.Key, g => g.Count());
+
+            NifModel rebuilt = RoundTrip(source);
+
+            foreach ((string shape, int count) in expected)
+            {
+                // MOPP trees are walked through rather than rebuilt: their code is
+                // generated, and an empty wrapper cannot even be written.
+                if (shape == "bhkMoppBvTreeShape")
+                    continue;
+
+                Assert.Equal(count, rebuilt.Blocks.Count(b => b.Name == shape));
+            }
+        }
+
+        [Fact]
         public void ACollisionBodyKeepsItsPlacement()
         {
             // Two bugs met here. The export read the body's placement from the wrong

@@ -330,6 +330,11 @@ namespace SECmd.Conversion
                 FbxObject node = FbxMeshWriter.AddModel(scene, name, "Null", NifTransform.Identity);
                 scene.Connect(node, parent);
 
+                // The suffix says what kind of container this is, but not exactly
+                // which class: a transform shape and a convex transform shape share
+                // one, as they do in ck-cmd. The class itself travels alongside.
+                FbxNodeType.Write(node, shape);
+
                 // A MOPP tree just wraps the shape it indexes; the tree itself is
                 // regenerated on import and carries nothing to convert.
                 foreach (NifItem child in ChildShapesOf(shape))
