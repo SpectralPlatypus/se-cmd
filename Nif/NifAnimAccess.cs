@@ -298,7 +298,15 @@ namespace SECmd.Nif
             if (model.GetRef(interpolator, "Data") is not { } block
                 || model.FindItem(block, "Data") is not { } group)
             {
-                return false;
+                // No data block. The interpolator's own Value is what it holds for the
+                // whole sequence, which is an animation and not a resting value: the
+                // next sequence can say something else.
+                if (model.FindItem(interpolator, "Value") is not { } constant)
+                    return false;
+
+                property.Constant = constant.Value.ToFloat();
+
+                return true;
             }
 
             AnimInterpolation interpolation = InterpolationOf(model, group);

@@ -336,6 +336,46 @@ namespace SECmd.Tests
         }
 
                 [Fact]
+        public void AConstantTrackKeepsItsAbsentDataBlock()
+        {
+            // An interpolator holding a value and no data block is a real animation:
+            // "this, for this whole sequence". The absence is the representation, so
+            // writing a one-key data block instead would be a different animation that
+            // happens to look the same.
+            NifModel source = Load("nifly/TestNifFile_Animated_LE.nif");
+
+            var constants = source.Blocks
+                .Where(b => b.Name == "NiBoolInterpolator" && source.GetRef(b, "Data") is null)
+                .Select(b => source.FindItem(b, "Value")!.Value.ToUInt())
+                .ToList();
+
+            Assert.NotEmpty(constants);
+
+            NifModel rebuilt = RoundTrip(source);
+
+            Assert.Equal(
+                constants,
+                rebuilt.Blocks
+                    .Where(b => b.Name == "NiBoolInterpolator" && rebuilt.GetRef(b, "Data") is null)
+                    .Select(b => rebuilt.FindItem(b, "Value")!.Value.ToUInt()));
+        }
+
+        [Fact]
+        public void AnAnimatedFileComesBackWithTheSameBlocks()
+        {
+            // The whole of it: a controller manager, three sequences, attached
+            // controllers with blend interpolators, a particle system with its
+            // modifiers, its shader and the controller that runs it, and two tracks
+            // that hold a constant.
+            NifModel source = Load("nifly/TestNifFile_Animated_LE.nif");
+            NifModel rebuilt = RoundTrip(source);
+
+            Assert.Equal(
+                source.Blocks.Select(b => b.Name).OrderBy(x => x, StringComparer.Ordinal),
+                rebuilt.Blocks.Select(b => b.Name).OrderBy(x => x, StringComparer.Ordinal));
+        }
+
+                [Fact]
         public void AParticleSystemKeepsItsShader()
         {
             // A particle system is a shape: it has a shader and an alpha property like

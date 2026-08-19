@@ -91,10 +91,51 @@ namespace SECmd.Fbx
                 AddChannel(scene, layer, model, "S", "Lcl Scaling", track.Scale);
 
                 foreach (AnimProperty property in track.Properties)
-                    AddPropertyChannel(scene, layer, model, property);
+                {
+                    if (property.Constant is { } value)
+                        AddConstant(stack, track.NodeName, property, value);
+                    else
+                        AddPropertyChannel(scene, layer, model, property);
+                }
             }
 
             return missing;
+        }
+
+        /// <summary>Prefix on a stack property holding a track's constant value.</summary>
+        public const string ConstantPrefix = "const_";
+
+        /// <summary>
+        /// Records a track that holds one value for the whole sequence.
+        /// </summary>
+        /// <remarks>
+        /// This cannot be a curve: a curve with no keys is not a curve, and a curve
+        /// with one invented key is a different animation that happens to look the
+        /// same. Nor can it be the model's resting value, because that is one value
+        /// per model where this is one per *take* — two sequences can hold different
+        /// constants for the same property, which is exactly what the file this was
+        /// found in does.
+        ///
+        /// The stack is the only per-take place in FBX, so it goes there, keyed by the
+        /// node and the property it belongs to.
+        /// </remarks>
+        private static void AddConstant(
+            FbxObject stack, string nodeName, AnimProperty property, float value)
+        {
+            // Typed rather than stringly, so the kind survives with the value: a
+            // boolean constant and a float one are the same number and different
+            // animations, and nothing else on the stack says which this is.
+            stack.Properties.Set(
+                $"{ConstantPrefix}{nodeName}{AnimProperty.Separator}{property.Name}",
+                property switch
+                {
+                    { IsColor: true } => "ColorRGB",
+                    { IsBoolean: true } => "bool",
+                    _ => "Number"
+                },
+                string.Empty,
+                FbxProperties.UserFlags,
+                (double)value);
         }
 
         /// <summary>

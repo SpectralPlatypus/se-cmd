@@ -357,18 +357,25 @@ documents as `['BirthRate', 'EmitterActive']`.
 A shader controller has no interpolator id, so its name has an empty third part:
 `BSEffectShaderPropertyFloatController|5||BSEffectShaderProperty`.
 
-##### What this cannot carry
+##### Constant tracks
 
-A track with **no keys** does not survive, because an FBX curve with no keys is not a
-curve. A NIF interpolator can hold a constant value and no data block at all, and that
-is a real animation: it says "this value, for this whole sequence". In
-`TestNifFile_Animated_LE.nif` two of the three sequences hold exactly that for
-`EmitterActive`, which is why the file's three `NiBoolInterpolator` blocks come back as
-one.
+A NIF interpolator can hold a value and **no data block at all**, and that is a real
+animation: it says "this value, for this whole sequence". The absence of the block is
+the representation, not a missing piece of one.
 
-Carrying them needs a constant to travel as something other than an empty curve — a
-single key at the sequence's start would do it, at the cost of inventing a key the
-source did not have.
+It cannot be a curve, and there are three ways to get this wrong:
+
+- **An empty curve** is not a curve, and most importers drop it.
+- **A curve with one invented key** is a different animation that happens to look the
+  same, and it comes back as a data block with one key rather than as a constant.
+- **The model's resting value** is one value per *model*, where this is one per *take*.
+  `TestNifFile_Animated_LE.nif` holds different constants for `EmitterActive` across its
+  three sequences, so a per-model value cannot express it.
+
+The `AnimationStack` is the only per-take place in FBX, so a constant goes there, named
+`const_<node>|<property>`. It is written **typed** — `bool`, `Number` or `ColorRGB` —
+because a boolean constant and a float one are the same number and different animations,
+and nothing else on the stack says which this is.
 
 ### 4.8 Collision shapes
 
@@ -1077,7 +1084,6 @@ shifts by `-start`.
 | Limit | Consequence |
 | --- | --- |
 | A track binds by node name | Duplicate names cannot be told apart, in either format |
-| An FBX curve needs keys | An interpolator holding a constant and no data block is dropped (§4.7.4) |
 | A controller needs an interpolator to be recognised | One with none carries no animation, so this layer cannot see it. Where such a controller matters it travels with the structure instead — see §4.9A for particle systems |
 | One layer per stack | Layered animation is not represented |
 
@@ -1137,7 +1143,6 @@ Real gaps, each with its reason recorded where it bites.
 | What | Consequence | Where |
 | --- | --- | --- |
 | `BSDynamicTriShape`'s second vertex buffer | The class is rebuilt as a plain `BSTriShape`, since asking for a dynamic shape without the buffer gives one with no vertices at all | §5.3.3 |
-| An interpolator holding a constant and no data block | An FBX curve with no keys is not a curve, so a track that says "this value, for this whole sequence" does not survive | §4.7.4 |
 | A controller with no interpolator, outside a particle system | Not recognised as animation, and only particle systems carry these structurally so far | §5A.6, §4.9A |
 | Array order within a rebuilt convex hull | The vertices and planes agree, but arrive in the fit's order rather than Havok's, which nif.xml says is lexicographic | §5.7.1 |
 

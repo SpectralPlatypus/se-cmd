@@ -461,8 +461,11 @@ namespace SECmd.Nif
                 if (track.Curves.Any(c => c.HasKeys))
                     entries.Add((track, node, null));
 
-                foreach (AnimProperty property in track.Properties.Where(p => p.Curves.Any(c => c.HasKeys)))
+                foreach (AnimProperty property in track.Properties.Where(
+                             p => p.Curves.Any(c => c.HasKeys) || p.Constant is not null))
+                {
                     entries.Add((track, node, property));
+                }
             }
 
             if (model.SetArraySize(block, "Num Controlled Blocks", "Controlled Blocks", entries.Count)
@@ -519,6 +522,13 @@ namespace SECmd.Nif
         /// </remarks>
         private static NifItem WriteValueInterpolator(NifModel model, AnimProperty property, float offset)
         {
+            // A constant holds one value for the whole sequence and has no data block
+            // at all -- that absence is the representation, not a missing piece of
+            // one, so writing a one-key block instead would be a different animation
+            // that happens to look the same.
+            if (property.Constant is { } constant)
+                return WriteConstantInterpolator(model, property, constant);
+
             string dataType = property switch
             {
                 { IsColor: true } => "NiPosData",
@@ -565,6 +575,30 @@ namespace SECmd.Nif
             });
 
             model.SetRef(interpolator, "Data", data);
+            return interpolator;
+        }
+
+        /// <summary>An interpolator holding one value and no keys.</summary>
+        private static NifItem WriteConstantInterpolator(
+            NifModel model, AnimProperty property, float constant)
+        {
+            NifItem interpolator = model.InsertBlock(property switch
+            {
+                { IsColor: true } => "NiPoint3Interpolator",
+                { IsBoolean: true } => "NiBoolInterpolator",
+                _ => "NiFloatInterpolator"
+            });
+
+            if (model.FindItem(interpolator, "Value") is { } value)
+            {
+                if (property.IsColor)
+                    value.Value.Set(new NifVector3(constant, constant, constant));
+                else if (property.IsBoolean)
+                    value.Value.SetCount(constant != 0f ? 1u : 0u);
+                else
+                    value.Value.SetFloat(constant);
+            }
+
             return interpolator;
         }
 

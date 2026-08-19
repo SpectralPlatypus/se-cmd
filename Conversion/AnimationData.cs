@@ -89,6 +89,18 @@ namespace SECmd.Conversion
         /// <summary>The property class the controller is attached to, when it is one.</summary>
         public string PropertyType { get; init; } = string.Empty;
 
+        /// <summary>
+        /// The value this property holds for the whole sequence, when it has no keys.
+        /// </summary>
+        /// <remarks>
+        /// A NIF interpolator can carry a value and no data block at all, and that is
+        /// a real animation: it says "this, for this whole sequence". It is not the
+        /// same as the property's resting value, because a different sequence can say
+        /// something different, and it is not a curve either — a curve with one key is
+        /// a curve, and this is the absence of one.
+        /// </remarks>
+        public float? Constant { get; set; }
+
         /// <summary>The FBX name for a visibility track.</summary>
         /// <remarks>
         /// Kept as the plain FBX property rather than an encoded one, because
