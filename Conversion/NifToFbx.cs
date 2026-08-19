@@ -256,7 +256,11 @@ namespace SECmd.Conversion
 
             NifTransform transform = NifTransform.Identity;
 
-            if (!isPhantom && _model.FindItem(body, "Translation") is { } translation)
+            // The body's placement lives inside its Rigid Body Info, not beside it.
+            // Read from the wrong path this silently yielded nothing, and every
+            // collision body in every mesh exported at the origin -- which no fixture
+            // caught, because the ones with collision all sit at the origin anyway.
+            if (!isPhantom && _model.FindItem(body, @"Rigid Body Info\Translation") is { } translation)
             {
                 // Havok works in metres; the rest of the file is in Skyrim units.
                 NifVector4 t = translation.Value.Get<NifVector4>();
@@ -265,11 +269,18 @@ namespace SECmd.Conversion
                     t.Y * ShapeTessellator.BhkScaleFactor,
                     t.Z * ShapeTessellator.BhkScaleFactor);
 
-                NifQuat rotation = _model.FindItem(body, "Rotation")?.Value.Get<NifQuat>() ?? NifQuat.Identity;
+                NifQuat rotation =
+                    _model.FindItem(body, @"Rigid Body Info\Rotation")?.Value.Get<NifQuat>() ?? NifQuat.Identity;
                 transform = new NifTransform(scaled, NifTransform.RotationFromQuaternion(rotation), 1f);
             }
 
-            FbxObject bodyNode = FbxMeshWriter.AddModel(scene, name + suffix, "Null", transform);
+            // The body's transform is a world transform, and the node it hangs from
+            // may be a bone several levels down. Written relative to that node, so the
+            // body's *global* placement is its NIF one -- which is what a DCC tool
+            // draws and what the import reads back.
+            FbxObject bodyNode = FbxMeshWriter.AddModel(
+                scene, name + suffix, "Null", FbxGlobalTransform.Under(scene, parent, transform));
+
             scene.Connect(bodyNode, parent);
 
             FbxCollisionObject.Write(bodyNode, _model, collision, body);

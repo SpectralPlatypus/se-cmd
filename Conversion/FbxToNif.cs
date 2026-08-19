@@ -467,7 +467,9 @@ namespace SECmd.Conversion
         /// </summary>
         private void WriteBodyTransform(NifItem body, FbxObject bodyNode)
         {
-            NifTransform transform = ReadTransform(bodyNode);
+            // The body's placement is a world transform and the node carrying it may
+            // hang off a bone, so it is the node's global transform that is written.
+            NifTransform transform = FbxGlobalTransform.Of(_scene, bodyNode);
             NifVector3 t = transform.Translation;
 
             _model.FindItem(body, @"Rigid Body Info\Translation")?.Value.Set(new NifVector4(

@@ -898,23 +898,25 @@ pairs a blend collision object with a plain `bhkRigidBody` and an ordinary one w
 `bhkRigidBodyT`, which applies its own transform; a skeleton's bodies are placed by their
 bones and do not want that.
 
-##### Known issue: the body transform is written locally
+##### The body transform is a world transform
 
-A NIF rigid body's transform is a **world** transform even when the body hangs off a
-bone several levels down, which is exactly what a skeleton does. This port writes it as
-the FBX node's *local* transform and reads it back the same way, so a NIF round trip is
-exact — and the scene is wrong the moment anyone opens it, because the body is displaced
-by every transform above it.
+A NIF rigid body's transform places it in the **world**, even when the body hangs off a
+bone several levels down — which is exactly what a skeleton does. Two things follow, and
+both were wrong here.
 
-ck-cmd writes it relative to the parent's global transform for blend collision objects
-(§4.9) and reads the global transform back for rigs (L4884), so its scene is right.
+The placement lives at `Rigid Body Info\Translation`, not beside it. Read from the wrong
+path it silently yielded nothing, so **every collision body in every mesh exported at the
+origin**: all 24 of a skeleton's bodies piled on one point. No fixture caught it, because
+the ones with collision sit at the origin anyway, and no NIF round trip caught it either
+— nothing came back, and nothing was expected to.
 
-An attempt at the same here was reverted. Composing the chain with `ParentsOf` gave a
-global transform of zero for all 24 bodies of `skeleton_cow.nif` and lost every body
-translation, most likely because a body node has more than one Model connected to it —
-constraints connect nodes as well as parents — so the export and the import walked
-different chains. Doing this properly needs the parent relationship distinguished from
-the other connections, not merely the first Model found.
+And it is written relative to the parent, so the node's *global* transform is the body's
+NIF placement, which is what ck-cmd does for a blend collision object (§4.9) and what a
+DCC tool draws. The import reads the global transform back, as ck-cmd does for a rig
+(L4884). `FbxGlobalTransform` walks the chain, since there is no SDK here to ask.
+
+A node has exactly one parent: everything else that joins nodes — a constraint's
+attachment point, a mesh, a deformer — hangs the other way round, as a child.
 
 ##### A skeleton authored in a DCC tool
 

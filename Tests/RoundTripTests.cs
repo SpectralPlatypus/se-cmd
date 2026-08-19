@@ -394,6 +394,91 @@ namespace SECmd.Tests
             Assert.Equal(source.Calculate(), rebuilt.Calculate());
         }
 
+                /// <summary>Every collision body's world placement, keyed by the node that owns it.</summary>
+        /// <remarks>
+        /// Keyed by owner rather than by block order, which differs between the two
+        /// files: comparing by index pairs a body with whichever body happens to sit
+        /// at that position in the rebuilt list, and reports 4 of 24 for a skeleton
+        /// that round-trips perfectly.
+        /// </remarks>
+        private static Dictionary<string, NifVector4> BodyPlacements(NifModel model)
+        {
+            var placements = new Dictionary<string, NifVector4>(StringComparer.Ordinal);
+
+            foreach (NifItem node in model.Blocks.Where(b => model.BlockInherits(b, "NiAVObject")))
+            {
+                if (model.GetRef(node, "Collision Object") is { } collision
+                    && model.GetRef(collision, "Body") is { } body
+                    && model.FindItem(body, @"Rigid Body Info\Translation") is { } translation)
+                {
+                    placements[model.GetName(node)] = translation.Value.Get<NifVector4>();
+                }
+            }
+
+            return placements;
+        }
+
+        [Fact]
+        public void ACollisionBodyKeepsItsPlacement()
+        {
+            // Two bugs met here. The export read the body's placement from the wrong
+            // path and silently got nothing, so every collision body in every mesh
+            // went out at the origin; and a body's transform is a world transform, so
+            // writing it as a node's local transform displaces it by every bone above
+            // it. A skeleton has both: 24 bodies, all deep in a bone chain.
+            NifModel source = Load("xpmsse/skeleton_cow.nif");
+
+            var expected = BodyPlacements(source);
+
+            Assert.Equal(24, expected.Count);
+            Assert.Contains(expected, e => Math.Abs(e.Value.Y) > 0.1f);
+
+            var actual = BodyPlacements(RoundTrip(source));
+
+            foreach ((string owner, NifVector4 placement) in expected)
+            {
+                NifVector4 got = Assert.Contains(owner, actual);
+
+                // A tolerance rather than a rounding: these are metres, and the value
+                // has been through a bone chain and back, so the question is how far
+                // it moved rather than which decimal it lands on.
+                float moved = Math.Abs(placement.X - got.X)
+                              + Math.Abs(placement.Y - got.Y)
+                              + Math.Abs(placement.Z - got.Z);
+
+                Assert.True(
+                    moved < 0.005f,
+                    $"{owner} moved {moved:F4}m: "
+                    + $"({placement.X:F4}, {placement.Y:F4}, {placement.Z:F4}) "
+                    + $"became ({got.X:F4}, {got.Y:F4}, {got.Z:F4})");
+            }
+        }
+
+        [Fact]
+        public void ACollisionBodySitsWhereItBelongsInTheScene()
+        {
+            // The other half, and the one a NIF round trip cannot see: the body's
+            // global placement in the exported scene has to be its NIF placement, or
+            // the collision is drawn somewhere else entirely in a DCC tool.
+            NifModel source = Load("xpmsse/skeleton_cow.nif");
+
+            var scene = new FbxScene(new NifToFbx(source).Convert());
+
+            NifItem pelvis = source.Blocks.First(b => source.GetName(b) == "Pelvis");
+            NifVector4 world = source.FindItem(
+                source.GetRef(source.GetRef(pelvis, "Collision Object")!, "Body")!,
+                @"Rigid Body Info\Translation")!.Value.Get<NifVector4>();
+
+            FbxObject node = scene.Objects.First(o => o.Class == "Model" && o.Name == "Pelvis_rb");
+
+            NifTransform global = FbxGlobalTransform.Of(scene, node);
+
+            // Havok metres out to Skyrim units.
+            Assert.Equal(world.X * ShapeTessellator.BhkScaleFactor, global.Translation.X, 1);
+            Assert.Equal(world.Y * ShapeTessellator.BhkScaleFactor, global.Translation.Y, 1);
+            Assert.Equal(world.Z * ShapeTessellator.BhkScaleFactor, global.Translation.Z, 1);
+        }
+
                 [Fact]
         public void ASkeletonComesBackASkeleton()
         {
