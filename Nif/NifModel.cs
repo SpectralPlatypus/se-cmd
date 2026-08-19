@@ -1177,11 +1177,13 @@ namespace SECmd.Nif
         /// </remarks>
         public void SetString(NifItem block, string field, string value)
         {
-            NifItem? item = FindItem(block, field);
+            if (FindItem(block, field) is { } item)
+                SetString(item, value);
+        }
 
-            if (item is null)
-                return;
-
+        /// <summary>Sets a string field directly, for a caller that already has it.</summary>
+        public void SetString(NifItem item, string value)
+        {
             bool usesStringTable = Version >= 0x14010003
                 && item.Value.Type is NifValueType.String or NifValueType.FilePath or NifValueType.StringIndex;
 
