@@ -431,6 +431,55 @@ Two exporter workarounds:
 
 Alpha presence is detected from any colour with alpha < 1.
 
+#### 5.3.1 Tangent space
+
+ck-cmd does not compute tangents. It calls the FBX SDK's
+`GenerateTangentsDataForAllUVSets()` (L3235), reads `GetElementTangent(0)` and
+`GetElementBinormal(0)` per vertex — deduplicated alongside position, normal, UV and
+colour in the same `uniques` map, so they split where everything else splits — and then
+**swaps them** on the way in (L3437–3439):
+
+```cpp
+data->SetTangents(bitangents);
+data->SetBitangents(tangents);
+data->SetBsVectorFlags(... | BSVF_HAS_TANGENTS);
+```
+
+The comment reads `//switched to uniform with nifskope`. FBX's binormal becomes the
+NIF's tangent and vice versa.
+
+This port has no FBX SDK, and generates the frame directly from NifSkope's
+`spTangentSpace` (`src/spells/tangentspace.cpp`) instead. That is the better source:
+NifSkope both writes these and renders from them, so its pairing of the two vectors is
+self-consistent, and generating them its way makes ck-cmd's swap unnecessary rather than
+something to reproduce.
+
+Two departures from the textbook algorithm are deliberate in the original and are kept:
+
+- **The UV determinant is used for its sign only.** The usual method divides by it,
+  weighting each triangle by UV area. NifSkope replaces the division with `±1`, and the
+  original carries the commented-out reciprocal with the note that this *"seems to
+  produce better results"*. A degenerate UV triangle therefore cannot blow up the sum.
+- **Each triangle is normalised before accumulating**, so a large one counts for no more
+  than a small one.
+
+Per vertex the contributions are summed and then orthogonalised against the normal:
+`t -= n(n·t)`, normalise; `b -= n(n·b)`, `b -= t(t·b)`, normalise. The bitangent is *not*
+`n × t` — that line exists in the original and is commented out — so its handedness comes
+from the UV layout rather than being imposed. A vertex no triangle contributed to gets
+`t = (n.y, n.z, n.x)`, `b = n × t`: arbitrary, but a stable frame rather than a zero
+vector for a shader to divide by.
+
+NifSkope reads triangles from strips, from `Triangles`, or **from every partition** when
+`bsver >= 100`, since that is where SE geometry keeps them.
+
+`BSGeometryDataFlags` bit 12 (`0x1000`, `Has Tangents`) announces the arrays and is OR'd
+into the existing flags, not assigned — the low six bits hold the UV set count. Writing
+the arrays without the bit leaves them in the file for nothing to read.
+
+The generated vectors agree with those in ck-cmd's own example files to four decimal
+places, which is what establishes that this is the same algorithm.
+
 ### 5.4 Extra data
 
 Node properties map back (L5380–5465):
@@ -744,6 +793,7 @@ Reproduced only where behaviour depends on them; otherwise fixed and noted.
 | Havok | No SDK link. MOPP generation goes through `NifMopp.dll` as NifSkope does; shape tessellation and convex hulls are implemented directly. See §8. |
 | Reference defects | Fixed unless behaviour depends on them, and listed in §9. |
 | Havok material | Carried as ck-cmd carries it (§4.8): an FBX material on the collision mesh named after the enum, with the layer as a `CollisionLayer` property. The names come from nif.xml's own `SkyrimHavokMaterial` and `SkyrimLayer` rather than the table ck-cmd hand-wrote, so the two spellings cannot drift. |
+| Tangent space | Generated from NifSkope's `spTangentSpace` (§5.3.1) rather than obtained from the FBX SDK, which also removes the need for ck-cmd's tangent/binormal swap. |
 | Inertia tensors | Computed directly (§5.7.2) rather than obtained from Havok, and held to the numbers ck-cmd's generated files carry. |
 | Node kinds | The NIF block type of every node, and of the root, travels in a `nif_block_type` property. FBX has one kind of node; NIF has a dozen that differ in what the engine does with them. The root matters most: `BSXFlags` asks twice whether it is exactly `NiNode` (see `bsxflags-spec.md` §3.2, §3.4), so flattening it changes what the file claims about itself. |
 | `bhkCOFlags` | Carried in a `nif_collision_flags` property rather than derived from the layer. ck-cmd derives them because an FBX authored in a DCC tool has none to carry; carrying wins where the data exists, and the derivation remains the fallback. |
