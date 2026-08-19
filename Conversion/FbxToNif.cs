@@ -259,6 +259,7 @@ namespace SECmd.Conversion
             _nodesByName[name] = node;
 
             FbxExtraDataWriter.ReadExtraData(model, _model, node, Warnings);
+            FbxMultiBound.Read(model, _model, node, Warnings);
 
             // Collision found under this node attaches to it rather than becoming a
             // child, so collect it before recursing into the real children.

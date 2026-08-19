@@ -624,6 +624,21 @@ Node properties map back (L5380–5465):
 `NiFloatExtraDataController` via `handleInlineTracks`; `Visibility` produces a
 `NiVisController`.
 
+#### 5.2.2 Multi-bound volumes
+
+A `BSMultiBoundNode` carries its own bounding volume, and the engine culls against that
+instead of working one out from the geometry — which is the whole reason the class
+exists. It is three blocks deep: the node names a `BSMultiBound`, which names a
+`BSMultiBoundData`, which is an oriented box or a sphere.
+
+The class survives on its own (§5.2); this is the payload, carried as `multi_bound_type`
+naming the data class plus one `mb_` property per field, with the node's own
+`Culling Mode` alongside. A class the schema does not know, or one that is not
+`BSMultiBoundData`, is reported and dropped.
+
+Losing it leaves a multi-bound node bounding nothing. Nothing looks wrong — the engine
+culls against an empty volume, and the saving the node existed for is silently gone.
+
 #### 5.4.1 What travels, and what does not
 
 Extra data rides on the node it hangs from, as `extra_data` (a count) and one `xd_<i>_`

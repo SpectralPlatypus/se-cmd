@@ -191,6 +191,35 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void AMultiBoundNodeKeepsItsVolume()
+        {
+            // The volume is the whole point of the class: the engine culls against it
+            // instead of working one out from the geometry, which is how a room's
+            // walls are drawn only when the player can see in. Losing it leaves a
+            // multi-bound node bounding nothing, and nothing looks wrong.
+            NifModel source = Load("nifly/TestNifFile_MultiBound_SE.nif");
+
+            NifItem before = Assert.Single(source.Blocks, b => b.Name == "BSMultiBoundOBB");
+
+            NifModel rebuilt = RoundTrip(source);
+
+            NifItem after = Assert.Single(rebuilt.Blocks, b => b.Name == "BSMultiBoundOBB");
+
+            Assert.Equal(
+                source.FindItem(before, "Center")!.Value.Get<NifVector3>(),
+                rebuilt.FindItem(after, "Center")!.Value.Get<NifVector3>());
+
+            Assert.Equal(
+                source.FindItem(before, "Size")!.Value.Get<NifVector3>(),
+                rebuilt.FindItem(after, "Size")!.Value.Get<NifVector3>());
+
+            // And it is reachable from the node, not merely present in the file.
+            NifItem node = Assert.Single(rebuilt.Blocks, b => b.Name == "BSMultiBoundNode");
+
+            Assert.Equal(after, rebuilt.GetRef(rebuilt.GetRef(node, "Multi Bound")!, "Data"));
+        }
+
+                [Fact]
         public void ExtraDataSurvives()
         {
             // Almost every NIF has some, and none of it has an FBX equivalent: a

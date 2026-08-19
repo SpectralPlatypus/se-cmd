@@ -193,6 +193,10 @@ namespace SECmd.Conversion
             // recalculates it.
             FbxExtraDataWriter.AddExtraData(node, _model, block);
 
+            // The volume a multi-bound node culls against, which the engine uses in
+            // place of one worked out from the geometry.
+            FbxMultiBound.Write(node, _model, block);
+
             // A particle system has no geometry to export -- its vertices are a
             // runtime buffer the file only sizes -- so it stays an empty node with
             // the system carried alongside it.
