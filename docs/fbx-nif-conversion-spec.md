@@ -898,6 +898,24 @@ pairs a blend collision object with a plain `bhkRigidBody` and an ordinary one w
 `bhkRigidBodyT`, which applies its own transform; a skeleton's bodies are placed by their
 bones and do not want that.
 
+##### Known issue: the body transform is written locally
+
+A NIF rigid body's transform is a **world** transform even when the body hangs off a
+bone several levels down, which is exactly what a skeleton does. This port writes it as
+the FBX node's *local* transform and reads it back the same way, so a NIF round trip is
+exact — and the scene is wrong the moment anyone opens it, because the body is displaced
+by every transform above it.
+
+ck-cmd writes it relative to the parent's global transform for blend collision objects
+(§4.9) and reads the global transform back for rigs (L4884), so its scene is right.
+
+An attempt at the same here was reverted. Composing the chain with `ParentsOf` gave a
+global transform of zero for all 24 bodies of `skeleton_cow.nif` and lost every body
+translation, most likely because a body node has more than one Model connected to it —
+constraints connect nodes as well as parents — so the export and the import walked
+different chains. Doing this properly needs the parent relationship distinguished from
+the other connections, not merely the first Model found.
+
 ##### A skeleton authored in a DCC tool
 
 A rig built in Blender or Max and brought in for the first time has no classes to carry,
