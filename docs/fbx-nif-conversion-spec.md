@@ -802,6 +802,28 @@ all three `generate_rb*` examples are `SKYL_STATIC` and *still* carry a mass and
 they come from ck-cmd's `generate_rb` generator, not from its import path, so they
 disagree with ck-cmd's own rule. Importing them zeroes both, by design.
 
+#### 5.6.0 Attached controllers and sequences are two halves
+
+A file with a `NiControllerManager` carries each animated controller **twice over**, and
+rebuilding only one half leaves an animation with nothing to apply it to:
+
+- The **controller** hangs on the thing it drives — a shader property, a particle
+  system — and holds a **blend** interpolator, which contains no keys. That is the slot
+  the manager writes the mixed value into as it crossfades whatever is playing.
+- Each **sequence** holds its own interpolator with the actual keys, and its controlled
+  block names the attached controller.
+
+So one controller serves every sequence: it is built once per host, class and controller
+id, and found again after that. `TestNifFile_Animated_LE.nif` has three sequences —
+`mBegin`, `mLoop`, `mEnd` — all naming the same two shader controllers and the same
+emitter controller.
+
+A controller may drive more than one thing, and the blend slots differ. nif.xml spells
+out the case that matters: `NiPSysEmitterCtlr`'s two interpolators are
+`['BirthRate', 'EmitterActive']`, the second on `Visibility Interpolator`. Its boolean
+track belongs in that slot of the *same* controller — not on a second controller of the
+same class, which is what keying on class alone produces.
+
 #### 5.6.1 Undoing the invented sequence
 
 A controller that no sequence names is attached directly to what it controls and runs on

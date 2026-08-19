@@ -119,8 +119,12 @@ namespace SECmd.Nif
 
             var built = new List<NifItem>();
 
+            // Shared across sequences on purpose: a controller is attached to what it
+            // drives once, and every sequence that animates it names that same block.
+            var attached = new Dictionary<(NifItem Host, string Type, string Id), NifItem>();
+
             foreach ((AnimSequence sequence, var tracks) in resolved)
-                built.Add(WriteSequence(model, manager, sequence, tracks));
+                built.Add(WriteSequence(model, manager, sequence, tracks, attached));
 
             if (model.SetArraySize(manager, "Num Controller Sequences", "Controller Sequences", built.Count)
                 is { } list)
@@ -140,6 +144,87 @@ namespace SECmd.Nif
         /// each node's own controller chain, so a node missing from it stays still
         /// however many keys name it.
         /// </remarks>
+        /// <summary>
+        /// The controller a sequence's entry drives, attached to its host.
+        /// </summary>
+        /// <remarks>
+        /// Attached controllers and sequences are two halves of one arrangement. The
+        /// controller hangs on the thing it drives and holds a *blend* interpolator,
+        /// which is the slot the manager writes into as it mixes; each sequence holds
+        /// its own interpolator with the actual keys and names the controller it feeds.
+        ///
+        /// One controller serves every sequence, so this is created once per host,
+        /// class and id, and found again after that.
+        /// </remarks>
+        private static NifItem? AttachedController(
+            NifModel model,
+            NifItem node,
+            AnimProperty property,
+            Dictionary<(NifItem Host, string Type, string Id), NifItem> attached)
+        {
+            if (property.ControllerType.Length == 0 || !model.KnowsBlock(property.ControllerType))
+                return null;
+
+            NifItem host = HostFor(model, node, property.ControllerType);
+            var key = (host, property.ControllerType, property.ControllerId);
+
+            if (!attached.TryGetValue(key, out NifItem? controller))
+            {
+                controller = model.InsertBlock(property.ControllerType);
+
+                model.SetRef(controller, "Target", host);
+                model.FindItem(controller, "Flags")?.Value.SetCount(StandaloneControllerFlags);
+                model.FindItem(controller, "Frequency")?.Value.SetFloat(1f);
+                model.FindItem(controller, "Phase")?.Value.SetFloat(0f);
+
+                if (property.ControllerId.Length > 0)
+                    model.SetString(controller, "Extra Data Name", property.ControllerId);
+
+                Attach(model, host, controller);
+
+                attached[key] = controller;
+            }
+
+            BlendInto(model, controller, property);
+
+            return controller;
+        }
+
+        /// <summary>
+        /// Gives a controller the blend slot this property mixes through.
+        /// </summary>
+        /// <remarks>
+        /// A blend interpolator holds no keys. It is where the manager writes the mixed
+        /// value of whatever is playing, so there is one per slot rather than one per
+        /// sequence, and a controller that has been given one already keeps it.
+        ///
+        /// Some controllers drive two things at once. nif.xml spells out the case that
+        /// matters here: <c>NiPSysEmitterCtlr</c>'s two interpolators are
+        /// <c>['BirthRate', 'EmitterActive']</c>, the second on
+        /// <c>Visibility Interpolator</c> — so its boolean track belongs in that slot
+        /// of the same controller, not on a second controller of the same class.
+        /// </remarks>
+        private static void BlendInto(NifModel model, NifItem controller, AnimProperty property)
+        {
+            bool visibility = property.IsBoolean
+                && model.FindItem(controller, "Visibility Interpolator") is not null;
+
+            string field = visibility ? "Visibility Interpolator" : "Interpolator";
+
+            if (model.GetRef(controller, field) is not null)
+                return;
+
+            string blend = property switch
+            {
+                { IsColor: true } => "NiBlendPoint3Interpolator",
+                { IsBoolean: true } => "NiBlendBoolInterpolator",
+                _ => "NiBlendFloatInterpolator"
+            };
+
+            if (model.KnowsBlock(blend))
+                model.SetRef(controller, field, model.InsertBlock(blend));
+        }
+
         /// <summary>
         /// Puts property animation back where it was: on the thing it controls.
         /// </summary>
@@ -346,7 +431,8 @@ namespace SECmd.Nif
 
         private static NifItem WriteSequence(
             NifModel model, NifItem manager, AnimSequence sequence,
-            List<(AnimTrack Track, NifItem Node)> tracks)
+            List<(AnimTrack Track, NifItem Node)> tracks,
+            Dictionary<(NifItem Host, string Type, string Id), NifItem> attached)
         {
             NifItem block = model.InsertBlock("NiControllerSequence");
 
@@ -408,6 +494,14 @@ namespace SECmd.Nif
                 model.SetString(entry, "Controller ID", property.ControllerId);
                 model.SetString(entry, "Interpolator ID", property.InterpolatorId);
                 model.SetString(entry, "Property Type", property.PropertyType);
+
+                // And the block itself. A sequence names a controller that is also
+                // attached to what it drives, and the attached copy holds a blend
+                // interpolator rather than keys -- that is the slot the manager mixes
+                // every playing sequence into. Without it the sequences describe an
+                // animation with nothing to apply it.
+                if (AttachedController(model, node, property, attached) is { } controller)
+                    model.SetRef(entry, "Controller", controller);
             }
 
             return block;

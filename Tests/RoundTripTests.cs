@@ -336,6 +336,43 @@ namespace SECmd.Tests
         }
 
                 [Fact]
+        public void ASequencedControllerIsAttachedAndBlended()
+        {
+            // Attached controllers and sequences are two halves of one arrangement.
+            // The controller hangs on what it drives and holds a blend interpolator --
+            // the slot the manager mixes every playing sequence into -- while each
+            // sequence holds its own interpolator with the keys and names that
+            // controller. Rebuilding only the sequences leaves an animation with
+            // nothing to apply it to.
+            NifModel source = Load("nifly/TestNifFile_Animated_LE.nif");
+
+            Assert.Contains(source.Blocks, b => b.Name == "NiControllerManager");
+
+            NifModel rebuilt = RoundTrip(source);
+
+            foreach (string type in new[]
+                     {
+                         "BSEffectShaderPropertyFloatController",
+                         "NiPSysEmitterCtlr",
+                         "NiBlendFloatInterpolator",
+                         "NiBlendBoolInterpolator"
+                     })
+            {
+                Assert.Equal(
+                    source.Blocks.Count(b => b.Name == type),
+                    rebuilt.Blocks.Count(b => b.Name == type));
+            }
+
+            // One controller serves all three sequences rather than one each.
+            NifItem emitter = Assert.Single(rebuilt.Blocks, b => b.Name == "NiPSysEmitterCtlr");
+
+            // Its two tracks go in different slots: nif.xml names them BirthRate and
+            // EmitterActive, the second on Visibility Interpolator.
+            Assert.Equal("NiBlendFloatInterpolator", rebuilt.GetRef(emitter, "Interpolator")!.Name);
+            Assert.Equal("NiBlendBoolInterpolator", rebuilt.GetRef(emitter, "Visibility Interpolator")!.Name);
+        }
+
+                [Fact]
         public void StandaloneControllersComeBackStandalone()
         {
             // A controller no sequence names is attached to what it controls and runs
