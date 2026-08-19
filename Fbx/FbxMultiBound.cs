@@ -30,6 +30,24 @@ namespace SECmd.Fbx
         /// <summary>The culling mode, which sits on the node rather than on the volume.</summary>
         public const string CullingProperty = "multi_bound_culling";
 
+        /// <summary>
+        /// Suffix on the mesh that shows the volume.
+        /// </summary>
+        /// <remarks>
+        /// The volume is written twice, as the collision material and the effect
+        /// shader are: the properties above are exact and are what the import reads,
+        /// and this is a mesh an artist can see and resize. A culling volume that
+        /// exists only as six numbers is one nobody will ever notice is wrong.
+        ///
+        /// The import recognises the suffix and skips it, so the mesh never becomes
+        /// geometry in the rebuilt file.
+        /// </remarks>
+        public const string MeshSuffix = "_multibound";
+
+        /// <summary>Whether a node is the mesh drawn for a volume rather than real geometry.</summary>
+        public static bool IsVolumeMesh(string name) =>
+            name.EndsWith(MeshSuffix, StringComparison.Ordinal);
+
         /// <summary>Records the node's bound, if it has one.</summary>
         public static void Write(FbxObject node, NifModel model, NifItem block)
         {

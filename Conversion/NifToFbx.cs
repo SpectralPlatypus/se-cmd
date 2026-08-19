@@ -196,6 +196,7 @@ namespace SECmd.Conversion
             // The volume a multi-bound node culls against, which the engine uses in
             // place of one worked out from the geometry.
             FbxMultiBound.Write(node, _model, block);
+            AddMultiBoundMesh(scene, node, block, name);
 
             // A particle system has no geometry to export -- its vertices are a
             // runtime buffer the file only sizes -- so it stays an empty node with
@@ -404,6 +405,58 @@ namespace SECmd.Conversion
 
         /// <summary>The body each shape hangs from, for the layer its filter names.</summary>
         private readonly Dictionary<NifItem, NifItem> _shapeOwners = [];
+
+        /// <summary>
+        /// Draws a multi-bound node's culling volume as a mesh beside it.
+        /// </summary>
+        /// <remarks>
+        /// The exact numbers travel as properties; this is so the volume can be seen
+        /// and resized in a DCC tool, which six numbers on a node cannot be. It is the
+        /// same split the collision material and the effect shader use, and the import
+        /// knows the suffix and skips it rather than turning it into geometry.
+        /// </remarks>
+        private void AddMultiBoundMesh(FbxScene scene, FbxObject node, NifItem block, string name)
+        {
+            if (!_model.BlockInherits(block, "BSMultiBoundNode")
+                || _model.GetRef(block, "Multi Bound") is not { } bound
+                || _model.GetRef(bound, "Data") is not { } data)
+            {
+                return;
+            }
+
+            MeshGeometry? mesh = data.Name switch
+            {
+                // Size is the full length of each side, where the tessellator takes
+                // half-extents.
+                "BSMultiBoundOBB" => ShapeTessellator.Box(
+                    Half(_model.FindItem(data, "Size")?.Value.Get<NifVector3>() ?? default)),
+
+                "BSMultiBoundSphere" => ShapeTessellator.Sphere(
+                    _model.FindItem(data, "Radius")?.Value.ToFloat() ?? 0f),
+
+                _ => null
+            };
+
+            if (mesh is null || mesh.Triangles.Count == 0)
+                return;
+
+            NifVector3 centre = _model.FindItem(data, "Center")?.Value.Get<NifVector3>() ?? default;
+
+            NifMatrix33 rotation = _model.FindItem(data, "Rotation") is { } r
+                ? r.Value.Get<NifMatrix33>()
+                : NifMatrix33.Identity;
+
+            string meshName = name + FbxMultiBound.MeshSuffix;
+
+            FbxObject holder = FbxMeshWriter.AddModel(
+                scene, meshName, "Mesh", new NifTransform(centre, rotation, 1f));
+
+            scene.Connect(holder, node);
+            scene.Connect(FbxMeshWriter.AddGeometry(scene, meshName + "_geometry", mesh), holder);
+        }
+
+        private static NifVector3 Half(NifVector3 size) =>
+            new(size.X * 0.5f, size.Y * 0.5f, size.Z * 0.5f);
 
         private IEnumerable<NifItem> ChildShapesOf(NifItem shape)
         {

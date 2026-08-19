@@ -631,10 +631,28 @@ instead of working one out from the geometry — which is the whole reason the c
 exists. It is three blocks deep: the node names a `BSMultiBound`, which names a
 `BSMultiBoundData`, which is an oriented box or a sphere.
 
-The class survives on its own (§5.2); this is the payload, carried as `multi_bound_type`
-naming the data class plus one `mb_` property per field, with the node's own
-`Culling Mode` alongside. A class the schema does not know, or one that is not
-`BSMultiBoundData`, is reported and dropped.
+The reference handles none of this: `FBXWrangler.cpp` has no occurrence of `MultiBound`
+in either direction, and ck-cmd's only mention of it anywhere is `geometry.cpp` counting
+`BSMultiBound` for the BSXFlags term annotated *"wrong"* (§9).
+
+The class survives on its own (§5.2); this is the payload, and it is written **twice**,
+as the collision material (§4.8) and the effect shader (§5.3.2) are:
+
+- The **exact half** is `multi_bound_type` naming the data class, one `mb_` property per
+  field, and the node's own `Culling Mode`. This is the authoritative copy and the only
+  thing the import reads. A class the schema does not know, or one that is not
+  `BSMultiBoundData`, is reported and dropped.
+- The **visible half** is a tessellated mesh under the node, suffixed `_multibound`,
+  positioned at the volume's centre and rotated by its matrix. An oriented box becomes a
+  box of half its stated size — `Size` is the full length of each side — and a sphere
+  becomes a sphere.
+
+The import recognises the suffix and skips it, exactly as it skips `_rb` and `_sp`, so
+the mesh never becomes geometry in the rebuilt file. Without that it would come back as
+a box floating inside every multi-bound node.
+
+A culling volume that exists only as six numbers is one nobody will ever notice is
+wrong, which is the same reason the other two are written twice.
 
 Losing it leaves a multi-bound node bounding nothing. Nothing looks wrong — the engine
 culls against an empty volume, and the saving the node existed for is silently gone.
@@ -969,6 +987,7 @@ Reproduced only where behaviour depends on them; otherwise fixed and noted.
 | L1984 | `setPropertyAnimationOnDefaultStack` calls `span.SetStart` where `SetStop` is meant |
 | L753, L760 | `vector<Triangle>& tris = vector<Triangle>(0)` binds a reference to a temporary |
 | §3 | `unsanitizeString` is not injective; a literal `_s_` in a name is corrupted |
+| §5.2.2 | The FBX path handles no `BSMultiBound`. A multi-bound node comes back bounding nothing, and the engine culls against an empty volume. Fixed here |
 | §4.3.1 | The FBX path handles no `BSEffectShaderProperty`. Export casts the shader to `BSLightingShaderProperty` and takes the null, so the shape leaves with no material; import only ever builds a lighting shader. Handled elsewhere in ck-cmd, so this is a gap in the FBX path. Fixed here — see §5.3.2 |
 
 ---

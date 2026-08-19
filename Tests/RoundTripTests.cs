@@ -191,6 +191,47 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void TheCullingVolumeIsVisibleInTheScene()
+        {
+            // Six numbers on a node is a volume nobody will ever notice is wrong. So
+            // it is drawn as a mesh as well, the way collision shapes are, and the
+            // exact numbers stay on the properties.
+            NifModel source = Load("nifly/TestNifFile_MultiBound_SE.nif");
+
+            NifVector3 size = source.FindItem(
+                source.Blocks.First(b => b.Name == "BSMultiBoundOBB"), "Size")!.Value.Get<NifVector3>();
+
+            var scene = new FbxScene(new NifToFbx(source).Convert());
+
+            FbxObject volume = Assert.Single(
+                scene.Objects, o => o.Class == "Model" && FbxMultiBound.IsVolumeMesh(o.Name));
+
+            FbxObject geometry = Assert.Single(scene.ChildrenOf(volume.Id), o => o.Class == "Geometry");
+
+            MeshGeometry mesh = FbxMeshReader.Read(geometry, new FbxMeshReader.Options())!;
+
+            // A box of the right size, centred on its node: the extents are half of
+            // what the volume calls its size.
+            Assert.Equal(size.X / 2f, mesh.Vertices.Max(v => v.X), 2);
+            Assert.Equal(size.Y / 2f, mesh.Vertices.Max(v => v.Y), 2);
+            Assert.Equal(size.Z / 2f, mesh.Vertices.Max(v => v.Z), 2);
+        }
+
+        [Fact]
+        public void TheCullingVolumeDoesNotBecomeGeometry()
+        {
+            // It is a picture of the bound, not part of the model. Left unrecognised
+            // it would come back as a box floating inside every multi-bound node.
+            NifModel source = Load("nifly/TestNifFile_MultiBound_SE.nif");
+
+            int shapes = source.Blocks.Count(b => source.BlockInherits(b, "BSTriShape"));
+
+            NifModel rebuilt = RoundTrip(source);
+
+            Assert.Equal(shapes, rebuilt.Blocks.Count(b => rebuilt.BlockInherits(b, "BSTriShape")));
+        }
+
+                [Fact]
         public void AMultiBoundNodeKeepsItsVolume()
         {
             // The volume is the whole point of the class: the engine culls against it

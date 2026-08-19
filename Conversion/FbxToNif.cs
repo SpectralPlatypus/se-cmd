@@ -206,6 +206,11 @@ namespace SECmd.Conversion
                 return;
             }
 
+            // The mesh drawn for a multi-bound volume is a picture of it, not geometry.
+            // The volume itself is rebuilt from the node's properties.
+            if (FbxMultiBound.IsVolumeMesh(name))
+                return;
+
             NifTransform transform = ReadTransform(model);
 
             // A mesh holder interposed on export carries no information of its own,
