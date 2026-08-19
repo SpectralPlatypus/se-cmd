@@ -715,6 +715,35 @@ all three `generate_rb*` examples are `SKYL_STATIC` and *still* carry a mass and
 they come from ck-cmd's `generate_rb` generator, not from its import path, so they
 disagree with ck-cmd's own rule. Importing them zeroes both, by design.
 
+#### 5.6.1 Undoing the invented sequence
+
+A controller that no sequence names is attached directly to what it controls and runs on
+its own — a shader fading, a texture scrolling, a node blinking. FBX cannot say that:
+every animation there belongs to a stack. So the export gathers those controllers into
+an invented sequence named `Take 001`, which is what FBXWrangler calls the stack it
+invents for the same reason (§4.7.3), and the import has to undo the invention.
+
+Writing that sequence back as a real one is wrong in both directions at once. It puts a
+`NiControllerManager`, a `NiControllerSequence`, a `NiDefaultAVObjectPalette`, a
+`NiMultiTargetTransformController` and a `NiTextKeyExtraData` into a file that had none
+of them, and it leaves the controllers themselves unattached to what they control.
+
+So a sequence by that name is unpacked instead: each property becomes a controller of
+its recorded class, hung from the block it drives. Which block that is follows from the
+class — a `...ShaderProperty...` controller from the shader property, a
+`...AlphaProperty...` one from the alpha property, anything else from the node.
+
+Two details are not obvious:
+
+- **A controller may already be there.** A carrier that owns more of a controller than
+  its keys rebuilds it first: a flipbook comes back complete with its texture list,
+  needing only the interpolator that says which frame is showing. So an existing
+  controller of the same class is reused rather than duplicated.
+- **Only one that is still waiting.** The reuse matches a controller with **no
+  interpolator**. One that already has keys is a different controller that happens to
+  share a class, and a single shader can easily carry several — one scrolling U, another
+  scrolling V. Matching on class alone collapses them into one.
+
 ### 5.8 Output file settings
 
 `SaveNif` (L5793) writes version `20.2.0.7`, user version 12, user version 2 **83**

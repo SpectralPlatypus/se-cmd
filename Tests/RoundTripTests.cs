@@ -191,6 +191,42 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void StandaloneControllersComeBackStandalone()
+        {
+            // A controller no sequence names is attached to what it controls and runs
+            // on its own. FBX has no way to say that -- every animation there belongs
+            // to a stack -- so the export invents a sequence and the import has to
+            // undo the invention. Writing it back as a real sequence puts a controller
+            // manager, an object palette and a text key block into a file that had
+            // none, and leaves the controllers pointing at nothing.
+            NifModel source = Load("nifly/TestNifFile_OrderedNode_SE.nif");
+
+            Assert.DoesNotContain(source.Blocks, b => b.Name == "NiControllerManager");
+
+            int controllers = source.Blocks.Count(b => b.Name == "BSEffectShaderPropertyFloatController");
+
+            Assert.NotEqual(0, controllers);
+
+            NifModel rebuilt = RoundTrip(source);
+
+            Assert.Equal(
+                controllers,
+                rebuilt.Blocks.Count(b => b.Name == "BSEffectShaderPropertyFloatController"));
+
+            // And nothing was invented to hold them.
+            Assert.DoesNotContain(rebuilt.Blocks, b => b.Name == "NiControllerManager");
+            Assert.DoesNotContain(rebuilt.Blocks, b => b.Name == "NiControllerSequence");
+            Assert.DoesNotContain(rebuilt.Blocks, b => b.Name == "NiDefaultAVObjectPalette");
+
+            // Each is on a shader property, with keys, rather than loose in the file.
+            foreach (NifItem controller in rebuilt.Blocks.Where(
+                         b => b.Name == "BSEffectShaderPropertyFloatController"))
+            {
+                Assert.NotNull(rebuilt.GetRef(controller, "Interpolator"));
+            }
+        }
+
+                [Fact]
         public void AnEffectShaderLooksLikeItselfInTheScene()
         {
             // The es_ properties reimport perfectly on their own, which is what makes

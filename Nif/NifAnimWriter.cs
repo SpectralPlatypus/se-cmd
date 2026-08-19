@@ -62,6 +62,19 @@ namespace SECmd.Nif
 
             foreach (AnimSequence sequence in sequences)
             {
+                // The export invents this one to carry controllers that were attached
+                // to their targets rather than named by any sequence (see
+                // NifAnimAccess.ReadStandaloneControllers). Writing it back as a real
+                // sequence would answer a question the source never asked: it would
+                // put a controller manager, a sequence, an object palette and a text
+                // key block into a file that had none of them, and leave the
+                // controllers themselves unattached to what they control.
+                if (sequence.Name == NifAnimAccess.DefaultSequenceName)
+                {
+                    WriteStandaloneControllers(model, sequence, nodes, warnings);
+                    continue;
+                }
+
                 var tracks = new List<(AnimTrack, NifItem)>();
 
                 foreach (AnimTrack track in sequence.Tracks)
@@ -127,6 +140,161 @@ namespace SECmd.Nif
         /// each node's own controller chain, so a node missing from it stays still
         /// however many keys name it.
         /// </remarks>
+        /// <summary>
+        /// Puts property animation back where it was: on the thing it controls.
+        /// </summary>
+        /// <remarks>
+        /// A controller that no sequence names is attached directly to its host and
+        /// runs on its own. FBX has no way to say that — every animation there belongs
+        /// to a stack — so the export gathers them into an invented sequence and this
+        /// undoes the invention.
+        ///
+        /// Which host depends on what the controller drives. A shader's fade or a
+        /// texture's scroll is controlled from the shader property, an alpha threshold
+        /// from the alpha property, and visibility from the node itself, so the
+        /// controller's own class decides where it is hung.
+        /// </remarks>
+        private static void WriteStandaloneControllers(
+            NifModel model,
+            AnimSequence sequence,
+            IReadOnlyDictionary<string, NifItem> nodes,
+            List<string> warnings)
+        {
+            foreach (AnimTrack track in sequence.Tracks)
+            {
+                if (!nodes.TryGetValue(track.NodeName, out NifItem? node))
+                {
+                    warnings.Add(
+                        $"{track.NodeName}: no node of that name, its property animation is dropped");
+
+                    continue;
+                }
+
+                foreach (AnimProperty property in track.Properties)
+                {
+                    if (!property.Curves.Any(c => c.HasKeys) || property.ControllerType.Length == 0)
+                        continue;
+
+                    if (!model.KnowsBlock(property.ControllerType))
+                    {
+                        warnings.Add(
+                            $"{track.NodeName}: {property.ControllerType} is not a block this build knows, "
+                            + "its animation is dropped");
+
+                        continue;
+                    }
+
+                    // A controller of this class may already be somewhere on this
+                    // node, rebuilt by a carrier that owns more of it than its keys --
+                    // a flipbook comes back complete with its texture list, needing
+                    // only the interpolator that says which frame is showing. Adding a
+                    // second would leave two fighting over one property, so the search
+                    // covers every chain the node has rather than the one this would
+                    // have picked.
+                    (NifItem host, NifItem? found) = FindController(model, node, property.ControllerType);
+
+                    bool existing = found is not null;
+                    NifItem controller = found ?? model.InsertBlock(property.ControllerType);
+
+                    model.SetRef(controller, "Interpolator", WriteValueInterpolator(model, property, 0f));
+                    model.SetRef(controller, "Target", host);
+
+                    if (!existing)
+                    {
+                        model.FindItem(controller, "Flags")?.Value.SetCount(StandaloneControllerFlags);
+                        model.FindItem(controller, "Frequency")?.Value.SetFloat(1f);
+                        model.FindItem(controller, "Phase")?.Value.SetFloat(0f);
+                    }
+                    // The controller's own span is the span of the keys it holds; a
+                    // bare controller has no sequence to take one from.
+                    var times = property.Curves.SelectMany(c => c.Keys).Select(k => k.Time).ToList();
+
+                    model.FindItem(controller, "Start Time")?.Value.SetFloat(times.Count > 0 ? times.Min() : 0f);
+                    model.FindItem(controller, "Stop Time")?.Value.SetFloat(times.Count > 0 ? times.Max() : 0f);
+
+                    // An extra data controller names its target through the extra
+                    // data's name rather than through a field of its own.
+                    if (property.ControllerId.Length > 0)
+                        model.SetString(controller, "Extra Data Name", property.ControllerId);
+
+                    if (!existing)
+                        Attach(model, host, controller);
+                }
+            }
+        }
+
+        /// <summary>Active, and playing forwards on a loop, which is what a bare controller does.</summary>
+        private const uint StandaloneControllerFlags = 0x000C;
+
+        /// <summary>
+        /// The block a controller of this class hangs from.
+        /// </summary>
+        /// <remarks>
+        /// Falls back to the node, which is where a controller with no property of its
+        /// own belongs and where an unrecognised one does least harm.
+        /// </remarks>
+        private static NifItem HostFor(NifModel model, NifItem node, string controllerType)
+        {
+            string? field = controllerType switch
+            {
+                _ when controllerType.Contains("ShaderProperty", StringComparison.Ordinal) => "Shader Property",
+                _ when controllerType.Contains("AlphaProperty", StringComparison.Ordinal) => "Alpha Property",
+                _ => null
+            };
+
+            return field is not null && model.GetRef(node, field) is { } property ? property : node;
+        }
+
+        /// <summary>
+        /// A controller of this class already on the node or one of its properties.
+        /// </summary>
+        /// <returns>
+        /// The host to hang it from, and the controller if one is already there.
+        /// </returns>
+        private static (NifItem Host, NifItem? Controller) FindController(
+            NifModel model, NifItem node, string type)
+        {
+            foreach (NifItem host in NifAnimAccess.ControllerHosts(model, node))
+            {
+                for (NifItem? controller = model.GetRef(host, "Controller");
+                     controller is not null;
+                     controller = model.GetRef(controller, "Next Controller"))
+                {
+                    // Only one still waiting for its keys. A carrier that rebuilt a
+                    // controller without an interpolator left it for this; one that
+                    // already has an interpolator is a different controller that
+                    // happens to share a class, and a shader can easily carry several
+                    // -- one scrolling U, another scrolling V.
+                    if (controller.Name == type && model.GetRef(controller, "Interpolator") is null)
+                        return (host, controller);
+                }
+            }
+
+            return (HostFor(model, node, type), null);
+        }
+
+        /// <summary>Adds a controller to the end of a host's chain.</summary>
+        /// <remarks>
+        /// The end rather than the front, so controllers keep the order they were read
+        /// in: a chain is walked in order and two controllers on one property can
+        /// disagree about what they set.
+        /// </remarks>
+        private static void Attach(NifModel model, NifItem host, NifItem controller)
+        {
+            if (model.GetRef(host, "Controller") is not { } first)
+            {
+                model.SetRef(host, "Controller", controller);
+                return;
+            }
+
+            NifItem last = first;
+
+            while (model.GetRef(last, "Next Controller") is { } next)
+                last = next;
+
+            model.SetRef(last, "Next Controller", controller);
+        }
+
         private static NifItem WriteMultiTargetController(
             NifModel model, NifItem root, List<NifItem> targets)
         {
