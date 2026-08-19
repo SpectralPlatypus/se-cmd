@@ -126,6 +126,47 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void ChildrenAreLeftInTheOrderTheyCameIn()
+        {
+            // NifSkope offers a second reordering -- spReorderLinks, which sorts a
+            // node's children so shapes come last -- and it must not be applied.
+            //
+            // It is not an invariant: two of the shipped fixtures violate it, so it is
+            // cleanup NifSkope offers rather than a rule the format has. And for a
+            // BSOrderedNode it is actively wrong, since that class exists to draw its
+            // children in a fixed order and sorting them changes what it draws.
+            NifModel source = NifModel.Load(
+                Path.Combine(AppContext.BaseDirectory, "Resources", "nifly/TestNifFile_OrderedNode_SE.nif"), Db);
+
+            NifItem ordered = source.Blocks.First(b => b.Name == "BSOrderedNode");
+
+            var before = source.FindItem(ordered, "Children")!.Children
+                .Select(c => source.GetBlock(c) is { } t ? source.GetName(t) : "-")
+                .ToList();
+
+            Assert.True(before.Count > 2, "the fixture is supposed to have several children");
+
+            NifItem root = source.GetBlock(source.FindItem(source.Footer, "Roots")!.Children[0])!;
+
+            NifModel rebuilt = new FbxToNif(
+                new FbxScene(new NifToFbx(source).Convert()),
+                new FbxToNifOptions
+                {
+                    RootName = source.GetName(root),
+                    Version = source.Version,
+                    UserVersion = source.UserVersion,
+                    LegendaryEdition = source.BSVersion < 100
+                }).Convert(Db);
+
+            NifItem after = rebuilt.Blocks.First(b => b.Name == "BSOrderedNode");
+
+            Assert.Equal(
+                before,
+                rebuilt.FindItem(after, "Children")!.Children
+                    .Select(c => rebuilt.GetBlock(c) is { } t ? rebuilt.GetName(t) : "-"));
+        }
+
+        [Fact]
         public void ReorderingKeepsEveryLinkPointingWhereItDid()
         {
             // Renumbering is the whole risk here: a link is a block number, so a move

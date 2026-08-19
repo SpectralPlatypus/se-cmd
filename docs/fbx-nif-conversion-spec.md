@@ -1225,6 +1225,31 @@ The check is worth having in both directions: the fixture test asserts the *ship
 files satisfy it, which is what caught the constraint chain. A rule only tested against
 its own output tests nothing.
 
+### 5B.1 The rules that are not rules
+
+NifSkope's sanitise page holds three spells. Only the first is an invariant, and the
+other two were checked against the shipped files before being believed.
+
+| Spell | Shipped files | Applied here |
+| --- | --- | --- |
+| `spSanitizeBlockOrder` | 24 of 24 satisfy it | Yes — §5B |
+| `spReorderLinks` (sort children, shapes last) | **2 of 24 violate it** | **No** |
+| `spSanitizeLinkArrays` (drop null links) | 3 of 24 have null entries | Incidentally — none are produced |
+
+`spReorderLinks` sorts a node's children so that shapes come last for `bsver >= 83` and
+first below it. It is cleanup NifSkope offers, not a rule the format has — and applying
+it would be actively wrong for a `BSOrderedNode`, a class whose entire purpose is to
+draw its children in a fixed order. `TestNifFile_OrderedNode_SE.nif` is one of the two
+that "violate" it, which is the giveaway. A test asserts its children come back in the
+order they went in, so that nobody later mistakes the spell for a requirement.
+
+### 5B.2 What ck-cmd does about order
+
+Nothing. `RebuildVisitor` (L2631) gathers blocks into a `set<NiObject*>` and copies them
+out in the set's order, which is **pointer address order** — arbitrary, and different
+between runs of the same conversion. Whatever ordering the format wants, ck-cmd's output
+satisfies it only by chance. Recorded in §9.
+
 ---
 
 ## 6. Traversal invariants
@@ -1424,6 +1449,7 @@ Reproduced only where behaviour depends on them; otherwise fixed and noted.
 | L1984 | `setPropertyAnimationOnDefaultStack` calls `span.SetStart` where `SetStop` is meant |
 | L753, L760 | `vector<Triangle>& tris = vector<Triangle>(0)` binds a reference to a temporary |
 | §3 | `unsanitizeString` is not injective; a literal `_s_` in a name is corrupted |
+| L2631 | `RebuildVisitor` collects blocks into a `set<NiObject*>` and writes them in the set's order, which is pointer-address order — so block order is arbitrary and varies between runs. Havok blocks have an ordering requirement (§5B) that this cannot meet except by chance |
 | L2818, L3096 | The skin path's dismember branch is commented out, so `export_skin` builds a plain `NiSkinInstance` and then casts it to `BSDismemberSkinInstanceRef` and dereferences `bsskin->partitions`. That cast yields NULL |
 | §5.2.2 | The FBX path handles no `BSMultiBound`. A multi-bound node comes back bounding nothing, and the engine culls against an empty volume. Fixed here |
 | §4.3.1 | The FBX path handles no `BSEffectShaderProperty`. Export casts the shader to `BSLightingShaderProperty` and takes the null, so the shape leaves with no material; import only ever builds a lighting shader. Handled elsewhere in ck-cmd, so this is a gap in the FBX path. Fixed here — see §5.3.2 |
