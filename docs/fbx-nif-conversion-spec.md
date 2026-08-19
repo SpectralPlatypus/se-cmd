@@ -881,6 +881,25 @@ Havok shapes convert back via `convert_from_hk` (L4665), the mirror of §4.8, co
 list, convex transform, transform, MOPP, sphere, box, capsule, convex vertices and
 compressed mesh. Capsule endpoints are **swapped** relative to Havok.
 
+#### 5.7.0 Skeletons: the collision object's class
+
+`bhkBlendCollisionObject` is what makes a file a skeleton. The BSXFlags calculation
+defines `isSkeleton` as *having one* (`bsxflags-spec.md` §3.1), and three bits follow
+from that, so rebuilding it as a plain `bhkCollisionObject` does not lose a class — it
+changes what the engine thinks the file is. On `skeleton_cow.nif` the flags went from
+`0xC6` to `0x8A`: no ragdoll, no dynamic bodies, with every bone, constraint and shape
+still in place.
+
+The class travels as `nif_collision_type` on the body's node, with the blend form's
+`Heir Gain` and `Vel Gain` beside it — a zero gain is a bone that does not follow.
+
+The body's class travels too, as `nif_body_type`, because the two go together. ck-cmd
+pairs a blend collision object with a plain `bhkRigidBody` and an ordinary one with
+`bhkRigidBodyT`, which applies its own transform; a skeleton's bodies are placed by their
+bones and do not want that. ck-cmd builds the blend form only when exporting a rig
+(§5.7), a mode this port does not have, so there is nothing to follow and the classes are
+carried instead.
+
 #### 5.7.1 Convex hull plane equations
 
 `bhkConvexVerticesShape` stores the hull's faces as half spaces, and the convention is

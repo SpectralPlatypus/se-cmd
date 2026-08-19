@@ -391,7 +391,7 @@ namespace SECmd.Conversion
                 NifItem phantomCollision = _model.InsertBlock("bhkSPCollisionObject");
                 NifItem phantom = _model.InsertBlock("bhkSimpleShapePhantom");
 
-                FbxCollisionFlags.Read(bodyNode, _model, phantomCollision);
+                FbxCollisionObject.Read(bodyNode, _model, phantomCollision);
 
                 _model.SetRef(phantom, "Shape", shape);
                 _model.SetRef(phantomCollision, "Body", phantom);
@@ -399,14 +399,20 @@ namespace SECmd.Conversion
                 return phantomCollision;
             }
 
-            NifItem collision = _model.InsertBlock("bhkCollisionObject");
+            // A blend collision object is what makes a file a skeleton, so which class
+            // this is decides what the engine thinks the whole file is.
+            NifItem collision = _model.InsertBlock(
+                FbxCollisionObject.TypeOf(bodyNode, _model, "bhkCollisionObject"));
 
             // How the body and its node keep in step -- local transform, follow on
             // animation -- is not visible in the shape and cannot be derived from it.
-            FbxCollisionFlags.Read(bodyNode, _model, collision);
+            FbxCollisionObject.Read(bodyNode, _model, collision);
+            FbxCollisionObject.ReadGains(bodyNode, _model, collision);
 
-            // bhkRigidBodyT applies its own transform; the plain body ignores it.
-            NifItem body = _model.InsertBlock("bhkRigidBodyT");
+            // bhkRigidBodyT applies its own transform; the plain body ignores it,
+            // which is what a skeleton's bodies want since their bones place them.
+            NifItem body = _model.InsertBlock(
+                FbxCollisionObject.BodyTypeOf(bodyNode, _model, "bhkRigidBodyT"));
 
             // A constraint names the bodies it joins by the node they came from.
             _bodiesByName[name] = body;

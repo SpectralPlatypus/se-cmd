@@ -336,6 +336,35 @@ namespace SECmd.Tests
         }
 
                 [Fact]
+        public void ASkeletonComesBackASkeleton()
+        {
+            // A bhkBlendCollisionObject is not merely another collision class: the
+            // BSXFlags calculation defines isSkeleton as having one, so rebuilding it
+            // as a plain bhkCollisionObject changes what the engine thinks the file
+            // is. The cow skeleton went from 0xC6 to 0x8A -- no ragdoll, no dynamic
+            // bodies -- with its bones, its constraints and its shapes all intact.
+            NifModel source = Load("xpmsse/skeleton_cow.nif");
+
+            int blend = source.Blocks.Count(b => b.Name == "bhkBlendCollisionObject");
+
+            Assert.NotEqual(0, blend);
+
+            NifModel rebuilt = RoundTrip(source);
+
+            Assert.Equal(blend, rebuilt.Blocks.Count(b => b.Name == "bhkBlendCollisionObject"));
+
+            // And the flags say so, which is the thing that actually matters.
+            Assert.Equal(source.Calculate(), rebuilt.Calculate());
+
+            // The blend object's gains come with it; a zero gain is a bone that does
+            // not follow.
+            NifItem after = rebuilt.Blocks.First(b => b.Name == "bhkBlendCollisionObject");
+
+            Assert.Equal(1f, rebuilt.FindItem(after, "Heir Gain")!.Value.ToFloat(), 3);
+            Assert.Equal(1f, rebuilt.FindItem(after, "Vel Gain")!.Value.ToFloat(), 3);
+        }
+
+                [Fact]
         public void ASkinKeepsItsBodySlots()
         {
             // A slot says which part of a body a partition is, and that is the whole
