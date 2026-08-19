@@ -316,6 +316,56 @@ Times are seconds. Details:
 `"Default"` layer if none exists, and widen the stack's local time span to cover the
 controller's start/stop.
 
+#### 4.7.4 How a property track is named
+
+FBX animates a *named property on a node*. A NIF names what it animates with four
+strings in the sequence's controlled block — controller class, controller id,
+interpolator id, property type — and all four are needed to say what a track drives. So
+the FBX property name carries them, joined by `|`, with trailing empties dropped:
+
+```
+ControllerType|ControllerId|InterpolatorId|PropertyType
+```
+
+The node the track binds to is the `NiAVObject`, even when the controller hangs off a
+property of it: a shader's fade is controlled from the shader property, but it is the
+node an FBX curve can attach to.
+
+`NiVisController` with no ids is the one exception, and is written as plain
+`Visibility` — a standard FBX property, so a DCC tool given it actually hides the
+object, where an encoded name would be a number nobody reads.
+
+##### Worked example: `NiPSysEmitterCtlr`
+
+The emitter controller drives two things, and the interpolator id is what separates
+them. On `TestNifFile_Animated_LE.nif`'s `PCloud06` node:
+
+| FBX property | Keys | Drives |
+| --- | --- | --- |
+| `NiPSysEmitterCtlr\|NiPSysCylinderEmitter:0\|BirthRate` | 5 | how fast particles are emitted |
+| `NiPSysEmitterCtlr\|NiPSysCylinderEmitter:0\|EmitterActive` | 4, boolean | whether emission is on |
+
+The controller id is the modifier the controller drives (`NiPSysCylinderEmitter:0`), and
+the interpolator id names which of its two slots this is. That is what §5.6.0 reads back
+to decide between `Interpolator` and `Visibility Interpolator` — the same pairing nif.xml
+documents as `['BirthRate', 'EmitterActive']`.
+
+A shader controller has no interpolator id, so its name has an empty third part:
+`BSEffectShaderPropertyFloatController|5||BSEffectShaderProperty`.
+
+##### What this cannot carry
+
+A track with **no keys** does not survive, because an FBX curve with no keys is not a
+curve. A NIF interpolator can hold a constant value and no data block at all, and that
+is a real animation: it says "this value, for this whole sequence". In
+`TestNifFile_Animated_LE.nif` two of the three sequences hold exactly that for
+`EmitterActive`, which is why the file's three `NiBoolInterpolator` blocks come back as
+one.
+
+Carrying them needs a constant to travel as something other than an empty curve — a
+single key at the sequence's start would do it, at the cost of inventing a key the
+source did not have.
+
 ### 4.8 Collision shapes
 
 FBX has no shape primitives, so every Havok shape is **tessellated into a mesh**
