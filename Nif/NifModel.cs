@@ -481,22 +481,24 @@ namespace SECmd.Nif
 
             if (target is not null)
             {
+                // A sibling *array* means the element lining up with this one: the
+                // n-th strip's length is the n-th entry of Strip Lengths. This has to
+                // be tested before the value below, because an array item carries no
+                // value of its own and an unset value reads as a count of zero --
+                // which silently made every ragged row empty.
+                if (target.IsArray)
+                {
+                    if (scope is not null && target.Child(scope.Row) is { IsCount: true } peer)
+                        return peer.Value.ToUInt64();
+
+                    return 0;
+                }
+
                 if (target.IsCount || target.IsFloat)
                     return target.Value.ToUInt64();
 
                 if (target.IsFileVersion)
                     return target.Value.ToUInt();
-
-                // The name refers to a sibling *array*, so take the element that
-                // lines up with this one. Strip lengths are described this way: the
-                // n-th strip's length is the n-th entry of Strip Lengths.
-                if (target.HasChildren && scope is not null)
-                {
-                    NifItem? peer = target.Child(scope.Row);
-
-                    if (peer is not null && peer.IsCount)
-                        return peer.Value.ToUInt64();
-                }
 
                 return 0;
             }
@@ -1145,6 +1147,23 @@ namespace SECmd.Nif
         }
 
         /// <summary>
+        /// Replaces the string table wholesale, keeping the given order.
+        /// </summary>
+        /// <remarks>
+        /// For building a model that has to agree with an existing file, where the
+        /// indices are already written into the blocks and the table has to line up
+        /// with them exactly. <see cref="AddString"/> cannot do that job: it interns,
+        /// so it folds duplicates together and refuses empty strings, and Bethesda's
+        /// files contain both. One empty entry a third of the way down a table shifts
+        /// every name after it onto the wrong index.
+        /// </remarks>
+        public void SetStringTable(IEnumerable<string> strings)
+        {
+            _strings.Clear();
+            _strings.AddRange(strings);
+        }
+
+        /// <summary>
         /// Sets a string field, interning the text when the file version stores
         /// strings as indices into the header table.
         /// </summary>
@@ -1215,9 +1234,32 @@ namespace SECmd.Nif
             NifItem? numBlocks = FindItem(_header, "Num Blocks");
             numBlocks?.Value.SetCount((uint)_blocks.Count);
 
-            // Distinct block types, in first-use order.
+            // Distinct block types. Any order the header already has is kept, and
+            // only the types it does not name are appended, in first-use order.
+            //
+            // First-use is what Bethesda's exporter produces -- of 2,500 vanilla
+            // Skyrim meshes, all 2,500 are ordered that way -- so a model built from
+            // scratch comes out the way the game's own files do. But a file written
+            // by some other tool may order its table differently, and rewriting it
+            // would change bytes that carry no meaning. Re-saving a file should
+            // change what was edited and nothing else.
             var types = new List<string>();
             var typeIndices = new List<int>();
+
+            var present = new HashSet<string>(_blocks.Select(b => b.Name), StringComparer.Ordinal);
+
+            if (FindItem(_header, "Block Types") is { } existing)
+            {
+                foreach (NifItem entry in existing.Children)
+                {
+                    string name = entry.Value.AsString();
+
+                    // A type the file names but no longer uses is dropped: the table
+                    // describes the blocks, and a stale entry would outlive them.
+                    if (name.Length > 0 && present.Contains(name) && !types.Contains(name))
+                        types.Add(name);
+                }
+            }
 
             foreach (NifItem block in _blocks)
             {

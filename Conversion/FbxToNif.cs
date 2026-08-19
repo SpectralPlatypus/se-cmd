@@ -127,10 +127,57 @@ namespace SECmd.Conversion
             if (_options.ImportAnimation)
                 _model.WriteAnimations(root, _scene.ReadAnimations(), _nodesByName, Warnings);
 
+            // Last, because it is an answer about the finished graph.
+            AddBsxFlags(root);
+
             _model.SetRoots([root]);
             _model.UpdateHeader();
 
             return _model;
+        }
+
+        /// <summary>
+        /// Hangs a calculated <c>BSXFlags</c> off the root.
+        /// </summary>
+        /// <remarks>
+        /// Every bit is a fact about the block graph -- whether it animates, collides,
+        /// is a skeleton, is one collision or many -- so the value is worked out from
+        /// what was just built rather than carried across from the source file, which
+        /// would describe a graph this is not. See `docs/bsxflags-spec.md`.
+        ///
+        /// The root has to be linked before the calculation runs, because the walk
+        /// behind bits 5 and 7 starts from the footer, and the block itself has to be
+        /// attached afterwards so it does not appear in the graph it describes.
+        /// </remarks>
+        private void AddBsxFlags(NifItem root)
+        {
+            _model.SetRoots([root]);
+
+            uint flags = _model.Calculate();
+
+            NifItem bsx = _model.InsertBlock("BSXFlags");
+
+            _model.SetString(bsx, "Name", NifBsxFlags.BlockName);
+            _model.FindItem(bsx, "Integer Data")?.Value.SetCount(flags);
+
+            AddExtraData(root, bsx);
+        }
+
+        /// <summary>Appends one block to another's extra data list.</summary>
+        private void AddExtraData(NifItem block, NifItem extra)
+        {
+            var existing = _model.GetRefArray(block, "Extra Data List").ToList();
+
+            NifItem? array = _model.SetArraySize(
+                block, "Num Extra Data List", "Extra Data List", existing.Count + 1);
+
+            if (array is null)
+                return;
+
+            for (int i = 0; i < existing.Count; i++)
+                array.Children[i].Value.SetLink(_model.IndexOf(existing[i]));
+
+            array.Children[existing.Count].Value.SetLink(_model.IndexOf(extra));
         }
 
         /// <summary>

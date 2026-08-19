@@ -275,11 +275,54 @@ namespace SECmd.Nif
     /// </summary>
     internal static class NifPack
     {
-        /// <summary>Decodes a 16-bit half into a float.</summary>
-        public static float HalfToFloat(ushort half) => (float)BitConverter.UInt16BitsToHalf(half);
+        /// <summary>
+        /// Decodes a 16-bit half into a float.
+        /// </summary>
+        /// <remarks>
+        /// A NaN's payload is carried across by hand, because the numeric conversion
+        /// does not keep it: <c>(float)(Half)</c> and back turns a half of
+        /// <c>0x7F7D</c> into <c>0x7F7F</c>. A NIF is a file and may hold any bit
+        /// pattern, including a NaN some exporter left in a vertex, so a value that
+        /// was not touched has to be written back exactly as it was found.
+        /// </remarks>
+        public static float HalfToFloat(ushort half)
+        {
+            const ushort ExponentMask = 0x7C00;
+            const ushort MantissaMask = 0x03FF;
+
+            if ((half & ExponentMask) != ExponentMask || (half & MantissaMask) == 0)
+                return (float)BitConverter.UInt16BitsToHalf(half);
+
+            // Sign, all-ones exponent, and the ten payload bits where a float keeps
+            // its own top ten -- which is where FloatToHalf looks for them.
+            uint bits = (uint)(half & 0x8000) << 16
+                        | 0x7F800000u
+                        | (uint)(half & MantissaMask) << 13;
+
+            return BitConverter.UInt32BitsToSingle(bits);
+        }
 
         /// <summary>Encodes a float as a 16-bit half.</summary>
-        public static ushort FloatToHalf(float value) => BitConverter.HalfToUInt16Bits((Half)value);
+        /// <remarks>The reverse of <see cref="HalfToFloat"/>, payload and all.</remarks>
+        public static ushort FloatToHalf(float value)
+        {
+            const uint ExponentMask = 0x7F800000;
+            const uint MantissaMask = 0x007FFFFF;
+
+            uint bits = BitConverter.SingleToUInt32Bits(value);
+
+            if ((bits & ExponentMask) != ExponentMask || (bits & MantissaMask) == 0)
+                return BitConverter.HalfToUInt16Bits((Half)value);
+
+            ushort payload = (ushort)(bits >> 13 & 0x03FF);
+
+            // A float NaN whose top ten mantissa bits are all zero would come out as
+            // an infinity, which is a different number rather than a lossy one.
+            if (payload == 0)
+                payload = 0x0200;
+
+            return (ushort)((bits >> 16 & 0x8000) | 0x7C00 | payload);
+        }
 
         /// <summary>Expands a byte to the -1..1 range, as NifSkope's tNormbyte does.</summary>
         public static float ByteToSNorm(byte value) => (float)(value / 255.0 * 2.0 - 1.0);
