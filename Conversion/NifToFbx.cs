@@ -712,6 +712,61 @@ namespace SECmd.Conversion
         }
 
         /// <summary>
+        /// The visible half of an effect shader, as an ordinary FBX material.
+        /// </summary>
+        /// <remarks>
+        /// The exact values travel as properties (see <see cref="FbxEffectShader"/>)
+        /// and are what the import reads back. This is the other half: enough of the
+        /// shader expressed in FBX's own terms that the surface looks like itself in a
+        /// DCC tool — its texture on the diffuse channel, its base colour tinting it,
+        /// its own UV transform.
+        ///
+        /// Without it the material is a white Phong with nothing connected, and an
+        /// artist opening the file sees a blank surface beside correctly textured
+        /// lighting-shader ones. The properties would still reimport perfectly, which
+        /// is exactly what makes that failure easy to miss.
+        /// </remarks>
+        private MaterialData ReadEffectMaterial(NifItem shape, NifItem shader, string name)
+        {
+            NifColor4 baseColor = _model.FindItem(shader, "Base Color") is { } colour
+                ? colour.Value.Get<NifColor4>()
+                : new NifColor4(1f, 1f, 1f, 1f);
+
+            var material = new MaterialData
+            {
+                Name = name,
+                DiffuseColor = new NifColor3(baseColor.R, baseColor.G, baseColor.B),
+
+                // The base colour's alpha is the effect's overall opacity.
+                Alpha = baseColor.A,
+
+                EmissiveColor = new NifColor3(baseColor.R, baseColor.G, baseColor.B),
+                EmissiveMultiple = FloatOf(shader, "Base Color Scale", 1f),
+                UvOffset = Vector2Of(shader, "UV Offset", new NifVector2(0f, 0f)),
+                UvScale = Vector2Of(shader, "UV Scale", new NifVector2(1f, 1f)),
+                TextureClampMode = _model.GetUInt(shader, "Texture Clamp Mode")
+            };
+
+            // Same as a lighting shader's: the alpha property is the shape's, not the
+            // shader's, and it drives the transparency connection on the texture.
+            if (_model.GetRef(shape, "Alpha Property") is { } alpha)
+            {
+                material.AlphaProperty = AlphaSettings.FromFlags(
+                    (ushort)_model.GetUInt(alpha, "Flags"),
+                    (byte)_model.GetUInt(alpha, "Threshold"));
+            }
+
+            // An effect shader names its textures directly rather than through a set.
+            // Only the first has a standard FBX channel; the greyscale map follows the
+            // convention the texture set uses for its later slots.
+            material.Textures.Add(_model.GetString(shader, "Source Texture"));
+            material.Textures.Add(string.Empty);
+            material.Textures.Add(_model.GetString(shader, "Greyscale Texture"));
+
+            return material;
+        }
+
+        /// <summary>
         /// Reads a shape's shader and alpha properties into the neutral material
         /// form, or null when it has no shader property.
         /// </summary>
@@ -728,7 +783,7 @@ namespace SECmd.Conversion
             // ck-cmd returns null here instead, which loses the shape's material
             // entirely: see `docs/fbx-nif-conversion-spec.md` §4.3.
             if (FbxEffectShader.Is(_model, shader))
-                return new MaterialData { Name = name };
+                return ReadEffectMaterial(shape, shader, name);
 
             if (!_model.BlockInherits(shader, "BSLightingShaderProperty"))
                 return null;

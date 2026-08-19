@@ -493,6 +493,35 @@ The controller chain and extra data are not carried. An animated shader is anima
 through the sequences, which travel by their own route, and a carried link would point
 into a block list that no longer has that block.
 
+##### The two halves
+
+The material is written twice over, and the halves answer different questions.
+
+The **exact half** is the `es_` properties: one per field, as text, authoritative on
+reimport. Nothing else is read back — the visible half below is derived from these and
+is never the source of truth.
+
+The **visible half** is the same shader expressed in FBX's own vocabulary, so the
+surface looks like itself in a DCC tool:
+
+| NIF | FBX |
+| --- | --- |
+| `Source Texture` | a `FileTexture` connected to `DiffuseColor` (and to `TransparentColor` when the shape has an alpha property) |
+| `Greyscale Texture` | a texture on the `slot3` user property, following the convention the texture set uses for its later slots |
+| `Base Color` (rgb) | `DiffuseColor`, and `EmissiveColor` |
+| `Base Color` (alpha) | `TransparencyFactor`, as `1 - a` |
+| `Base Color Scale` | `EmissiveFactor` |
+| `UV Offset`, `UV Scale` | `ModelUVTranslation`, `ModelUVScaling` on the texture |
+
+Without the second half the material is a white Phong with nothing connected. That is
+the failure worth guarding against precisely because it is not a failure: the properties
+still reimport perfectly, the tests still pass, and the only symptom is an artist
+opening the file and seeing a blank surface next to correctly textured lighting-shader
+ones.
+
+This mirrors the collision material (§4.8), which is likewise both a name a DCC tool can
+edit and an exact value on reimport.
+
 #### 5.3.1 Tangent space
 
 ck-cmd does not compute tangents. It calls the FBX SDK's

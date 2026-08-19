@@ -45,9 +45,11 @@ namespace SECmd.Fbx
                 (double)emissive.R, (double)emissive.G, (double)emissive.B);
             properties.Set("EmissiveFactor", "Number", "", "A", (double)material.EmissiveMultiple);
 
-            // Diffuse and ambient are left white: NIF carries no diffuse colour, the
-            // diffuse texture supplies it.
-            properties.Set("DiffuseColor", "Color", "", "A", 1.0, 1.0, 1.0);
+            // A lighting shader carries no diffuse colour -- the texture supplies it --
+            // so this is white unless an effect shader put its base colour here.
+            NifColor3 diffuse = material.DiffuseColor;
+            properties.Set("DiffuseColor", "Color", "", "A",
+                (double)diffuse.R, (double)diffuse.G, (double)diffuse.B);
             properties.Set("AmbientColor", "Color", "", "A", 1.0, 1.0, 1.0);
             properties.Set("AmbientFactor", "Number", "", "A", 1.0);
 

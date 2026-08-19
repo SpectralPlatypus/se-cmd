@@ -194,6 +194,17 @@ namespace SECmd.Conversion
 
         public NifColor3 SpecularColor { get; set; } = new(1f, 1f, 1f);
 
+        /// <summary>
+        /// The colour multiplied into the diffuse texture, when the shader has one.
+        /// </summary>
+        /// <remarks>
+        /// A lighting shader has none — its diffuse comes wholly from the texture, so
+        /// this stays white and FBX gets white. An effect shader does: its base colour
+        /// is what tints the effect, and leaving it out is the difference between a
+        /// blue waterfall and a grey one.
+        /// </remarks>
+        public NifColor3 DiffuseColor { get; set; } = new(1f, 1f, 1f);
+
         /// <summary>NIF stores this over 0..999; FBX wants 0..1.</summary>
         public float SpecularStrength { get; set; }
 

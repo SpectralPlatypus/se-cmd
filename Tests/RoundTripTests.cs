@@ -191,6 +191,30 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void AnEffectShaderLooksLikeItselfInTheScene()
+        {
+            // The es_ properties reimport perfectly on their own, which is what makes
+            // a blank material easy to ship: nothing fails, and an artist opening the
+            // file sees an untextured surface beside correctly textured ones.
+            NifModel source = Load("nifly/TestNifFile_OrderedNode_SE.nif");
+
+            var scene = new FbxScene(new NifToFbx(source).Convert());
+
+            FbxObject material = scene.Objects.First(
+                o => o.Class == "Material" && FbxEffectShader.WasWritten(o));
+
+            var connected = scene.PropertyConnectionsTo(material.Id).ToList();
+
+            // Its own texture, on the channel a DCC tool renders from.
+            (FbxObject texture, _) = Assert.Single(connected, c => c.Property == "DiffuseColor");
+
+            Assert.Equal(
+                source.GetString(
+                    source.Blocks.First(b => b.Name == "BSEffectShaderProperty"), "Source Texture"),
+                texture.Child("RelativeFilename")?.Properties.FirstOrDefault());
+        }
+
+                [Fact]
         public void EffectShadersSurviveWithTheirOwnFields()
         {
             // ck-cmd's FBX path drops these: its export casts the shader to
