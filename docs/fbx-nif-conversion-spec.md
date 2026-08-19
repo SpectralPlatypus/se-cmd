@@ -1076,11 +1076,47 @@ Both directions depend on ordering that is easy to lose:
 
 ---
 
-## 7. Blocks deliberately dropped
+## 7. What is not round-tripped
 
-Recalculated or regenerated rather than round-tripped: `BSXFlags`,
-`NiDefaultAVObjectPalette`, `NiSkinPartition`, MOPP data, bounding spheres,
-`NiTextKeyExtraData` on export.
+Three different things, and they are worth keeping apart. Something derived is not a
+loss; something dropped is.
+
+### 7.1 Derived rather than carried
+
+These are computed from the rebuilt graph. Carrying them would describe the file the FBX
+came from rather than the one just built, and for several of them the source value is
+the thing most likely to be stale.
+
+| What | Where |
+| --- | --- |
+| `BSXFlags` | `bsxflags-spec.md`; every bit is a fact about the block graph |
+| Tangent space | §5.3.1, from NifSkope's algorithm |
+| Inertia tensors | §5.7.2, from the mass and the shape |
+| Convex hull planes | §5.7.1, from the hull |
+| Collision shape size | §4.8; refitted from the tessellated geometry, so a DCC edit wins |
+| Bounding spheres | recomputed from the vertices |
+| `NiSkinPartition` | rebuilt from the weights |
+| MOPP data | regenerated; see §8 |
+| `NiDefaultAVObjectPalette`, `NiTextKeyExtraData` | rebuilt with the controller manager |
+
+### 7.2 Deliberately discarded
+
+| What | Why |
+| --- | --- |
+| A static body's mass and inertia | §5.7.2. A static carrying a mass is treated as movable, which is how scenery falls through the world. ck-cmd zeroes both the same way |
+| The source's `BSXFlags` value | Recalculated as above, and carrying it as well would leave the file with two (§5.4.1) |
+| Uninitialised fields | Some Havok fields are `0xCD` throughout in the files that ship — the debug heap's fill pattern. There is nothing there to reproduce |
+
+### 7.3 Lost
+
+Real gaps, each with its reason recorded where it bites.
+
+| What | Consequence | Where |
+| --- | --- | --- |
+| `BSDynamicTriShape`'s second vertex buffer | The class is rebuilt as a plain `BSTriShape`, since asking for a dynamic shape without the buffer gives one with no vertices at all | §5.3.3 |
+| An interpolator holding a constant and no data block | An FBX curve with no keys is not a curve, so a track that says "this value, for this whole sequence" does not survive | §4.7.4 |
+| A controller with no interpolator | Not recognised as animation at all, so `NiPSysUpdateCtlr` and its like are not gathered | §5A.6 |
+| Array order within a rebuilt convex hull | The vertices and planes agree, but arrive in the fit's order rather than Havok's, which nif.xml says is lexicographic | §5.7.1 |
 
 ---
 
