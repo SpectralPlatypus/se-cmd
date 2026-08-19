@@ -191,6 +191,27 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void BonesNamedLikeSkyrimsResolve()
+        {
+            // FBX names cannot hold a space or a bracket, so "NPC R Thigh [RThg]" goes
+            // out as NPC_s_R_s_Thigh_s__ob_RThg_cb_ and has to be decoded on the way
+            // back. Left encoded it matches no node, and because a skin whose bones all
+            // fail to resolve is dropped whole, every Skyrim body part loses its
+            // skinning -- with the mesh, the shader and the bones themselves all intact.
+            NifModel source = Load("nifly/TestNifFile_LooseBlocks_SE.nif");
+
+            Assert.Contains(source.Blocks, b => source.GetName(b).Contains('['));
+
+            int partitions = source.Blocks.Count(b => b.Name == "NiSkinPartition");
+
+            Assert.NotEqual(0, partitions);
+
+            NifModel rebuilt = RoundTrip(source);
+
+            Assert.Equal(partitions, rebuilt.Blocks.Count(b => b.Name == "NiSkinPartition"));
+        }
+
+                [Fact]
         public void ASkinnedSeShapeCarriesItsWeightsInTheVertex()
         {
             // SE reads a skinned mesh's weights from the vertex buffer, not from

@@ -117,7 +117,13 @@ namespace SECmd.Fbx
 
                 var bone = new SkinBone
                 {
-                    Name = boneModel.Name,
+                    // Decoded, not raw. FBX names cannot hold a space or a bracket, so
+                    // a bone travels out as NPC_s_R_s_Thigh_s__ob_RThg_cb_ and has to
+                    // come back as "NPC R Thigh [RThg]" to match the node it names.
+                    // Left encoded it matches nothing, and since a skin whose bones all
+                    // fail to resolve is dropped whole, every Skyrim body part loses
+                    // its skinning without anything failing.
+                    Name = NameEncoding.Unsanitize(boneModel.Name),
                     SkinTransform = FromMatrixArray(cluster.Child("TransformLink"))
                 };
 
