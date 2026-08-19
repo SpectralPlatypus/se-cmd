@@ -76,16 +76,12 @@ namespace SECmd.Nif
             if (bones.Count == 0)
                 return missing;
 
-            // The class the shape had, when the scene said. A dismember instance
-            // carries body-part partitions a plain one does not -- that is what lets a
-            // cuirass hide the body beneath it -- so handing them to a shape that
-            // never had them is as wrong as taking them away. Absent an answer, the
-            // dismember form is the one Skyrim's own body parts use.
-            string type = skin.InstanceType.Length > 0
-                          && model.KnowsBlock(skin.InstanceType)
-                          && model.Database.Inherits(skin.InstanceType, "NiSkinInstance")
-                ? skin.InstanceType
-                : fallbackInstanceType;
+            // The class follows from the slots rather than being carried beside them.
+            // A body slot says which part of a body a partition is, and that is the
+            // whole of the difference between the two classes -- so a shape with slots
+            // is a dismember instance and a shape without one is not, and the two
+            // cannot disagree about it.
+            string type = skin.BodySlots.Count > 0 ? "BSDismemberSkinInstance" : fallbackInstanceType;
 
             NifItem instance = model.InsertBlock(type);
             NifItem data = model.InsertBlock("NiSkinData");
@@ -106,14 +102,10 @@ namespace SECmd.Nif
             var groups = SplitIntoPartitions(skin, bones.Count, vertexCount, triangles);
             WriteSkinPartitions(model, partition, skin, bones, groups);
 
-            // One body-part entry per partition, which is what makes this a
-            // dismember instance rather than a plain skin.
-            if (model.SetArraySize(instance, "Num Partitions", "Partitions", groups.Count)
-                is { } parts)
-            {
-                for (int i = 0; i < groups.Count && i < parts.Children.Count; i++)
-                    model.FindItem(parts.Children[i], "Body Part")?.Value.SetCount(0);
-            }
+            // One body-part entry per partition. The slots are what make this a
+            // dismember instance rather than a plain skin, so they are written here,
+            // once the partitions they describe are known.
+            WriteBodySlots(model, instance, skin, groups.Count);
 
             // BSTriShape names the field Skin, NiGeometry names it Skin Instance.
             if (model.FindItem(shape, "Skin Instance") is not null)
@@ -237,6 +229,62 @@ namespace SECmd.Nif
         }
 
         /// <summary>Writes the bind pose and the per-bone weights.</summary>
+        /// <summary>
+        /// Writes the body slots a dismember instance carries.
+        /// </summary>
+        /// <remarks>
+        /// One entry per skin partition, saying which part of a body that partition
+        /// is. The engine reads them to hide the body under a cuirass and to take a
+        /// limb off, so a shape that has them and a shape that does not are different
+        /// things rather than the same thing written two ways.
+        ///
+        /// Slots arrive by name, since the numbers differ between creature skeletons
+        /// and a name is what a reader can check. One that is not in the schema's enum
+        /// is parsed as a number, so a slot from a skeleton this build does not know
+        /// still survives.
+        /// </remarks>
+        private static void WriteBodySlots(NifModel model, NifItem instance, SkinData skin, int partitions)
+        {
+            if (skin.BodySlots.Count == 0 || partitions == 0)
+                return;
+
+            // One entry per partition, not per carried slot: the two agree when the
+            // file came from a NIF whose partitions were rebuilt the same way, and
+            // when they do not, the array has to match the partitions it describes.
+            if (model.SetArraySize(instance, "Num Partitions", "Partitions", partitions)
+                is not { } slots)
+            {
+                return;
+            }
+
+            // A freshly sized array holds elements that have not been expanded into
+            // their own fields yet, and writing into one of those writes nowhere.
+            slots.InvalidateConditionsRecursive();
+            model.UpdateArraySize(slots);
+
+            for (int i = 0; i < slots.Children.Count; i++)
+            {
+                // A partition past the end of the carried list takes the last slot,
+                // which is better than the torso every one of them used to get.
+                (string name, uint flags) = skin.BodySlots[Math.Min(i, skin.BodySlots.Count - 1)];
+
+                uint part =
+                    model.Database.TryGetEnumOptionValue("BSDismemberBodyPartType", name, out uint value)
+                        ? value
+                        : uint.TryParse(name, System.Globalization.NumberStyles.Integer,
+                                        System.Globalization.CultureInfo.InvariantCulture, out uint raw)
+                            ? raw
+                            : 0;
+
+                Field(slots.Children[i], "Body Part")?.Value.SetCount(part);
+                Field(slots.Children[i], "Part Flag")?.Value.SetCount(flags);
+            }
+        }
+
+        /// <summary>A compound's own field, by name.</summary>
+        private static NifItem? Field(NifItem item, string name) =>
+            item.Children.FirstOrDefault(c => c.Name == name);
+
         private static void WriteSkinData(NifModel model, NifItem data, SkinData skin, List<SkinBone> bones)
         {
             WriteTransform(model, data, "Skin Transform", skin.SkinTransform);

@@ -21,8 +21,21 @@ namespace SECmd.Fbx
     /// </remarks>
     public static class FbxSkinIO
     {
-        /// <summary>The property naming the shape's skin instance class.</summary>
-        public const string InstanceTypeProperty = "nif_skin_instance";
+        /// <summary>The property counting the shape's body slots.</summary>
+        /// <remarks>
+        /// A slot says which part of a body a skin partition is, and it is the whole of
+        /// the difference between the two skin instance classes: a shape with slots is
+        /// a `BSDismemberSkinInstance`, one without is a plain `NiSkinInstance`. So the
+        /// class is not carried — it follows from whether these are here, which means
+        /// the two cannot disagree.
+        ///
+        /// ck-cmd carries none of this. Its export never mentions body parts, and its
+        /// import sets every partition to `SBP_32_BODY` in a branch that cannot run.
+        /// </remarks>
+        public const string SlotCountProperty = "body_slots";
+
+        /// <summary>Prefix on one slot, before its index.</summary>
+        public const string SlotPrefix = "body_slot_";
 
         private const int SkinVersion = 101;
         private const int ClusterVersion = 100;
@@ -49,11 +62,24 @@ namespace SECmd.Fbx
 
             FbxObject skinObject = scene.AddObject("Deformer", geometry.Name + "_skin", "Skin");
 
-            // Which skin class the shape had. A dismember instance carries body-part
-            // partitions a plain one does not, and giving them to a shape that never
-            // had them is as wrong as taking them away.
-            if (skin.InstanceType.Length > 0)
-                skinObject.Properties.SetUserString(InstanceTypeProperty, skin.InstanceType);
+            // The body slots, named rather than numbered so a reader can check them.
+            // The class follows from these, so nothing else about it is written.
+            if (skin.BodySlots.Count > 0)
+            {
+                skinObject.Properties.SetUserString(
+                    SlotCountProperty,
+                    skin.BodySlots.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+                for (int i = 0; i < skin.BodySlots.Count; i++)
+                {
+                    (string slot, uint flags) = skin.BodySlots[i];
+
+                    skinObject.Properties.SetUserString($"{SlotPrefix}{i}", slot);
+                    skinObject.Properties.SetUserString(
+                        $"{SlotPrefix}{i}_flags",
+                        flags.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
+            }
 
             FbxNode node = skinObject.Node;
 
@@ -114,10 +140,30 @@ namespace SECmd.Fbx
             if (skinObject is null)
                 return null;
 
-            var skin = new SkinData
+            var skin = new SkinData();
+
+            if (int.TryParse(
+                    skinObject.Properties.GetString(SlotCountProperty),
+                    System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out int slots))
             {
-                InstanceType = skinObject.Properties.GetString(InstanceTypeProperty)
-            };
+                for (int i = 0; i < slots; i++)
+                {
+                    string name = skinObject.Properties.GetString($"{SlotPrefix}{i}");
+
+                    if (name.Length == 0)
+                        continue;
+
+                    uint.TryParse(
+                        skinObject.Properties.GetString($"{SlotPrefix}{i}_flags"),
+                        System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out uint flags);
+
+                    skin.BodySlots.Add((name, flags));
+                }
+            }
 
             foreach (FbxObject cluster in scene.ChildrenOf(skinObject.Id)
                          .Where(o => o.Class == "Deformer" && o.SubClass == "Cluster"))

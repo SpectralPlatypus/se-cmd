@@ -48,6 +48,22 @@ namespace SECmd.Conversion
         /// </remarks>
         public string InstanceType { get; set; } = string.Empty;
 
+        /// <summary>
+        /// The body slot each skin partition occupies, in partition order.
+        /// </summary>
+        /// <remarks>
+        /// This is the whole of the difference between the two skin instance classes.
+        /// A slot says which part of a body the partition is — torso, head, left hand
+        /// — and the engine uses it to hide the body under a cuirass and to take a
+        /// limb off. A shape with slots is a `BSDismemberSkinInstance`; a shape
+        /// without one is a plain `NiSkinInstance`, and there is nothing else to tell
+        /// them apart (§5.2.3).
+        ///
+        /// So the class is not carried separately: it follows from whether this is
+        /// empty, which means the two can never disagree.
+        /// </remarks>
+        public List<(string Slot, uint Flags)> BodySlots { get; } = [];
+
         /// <summary>The whole skin's transform, usually identity.</summary>
         public NifTransform SkinTransform { get; set; } = NifTransform.Identity;
 

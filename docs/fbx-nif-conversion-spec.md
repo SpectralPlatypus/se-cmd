@@ -573,12 +573,29 @@ single largest difference across the game's meshes.
 - The folder separates them in 214 of 237 directories, and fails on the one that
   matters. `meshes/actors/character` holds 11,433 of the first and 9,772 of the second.
 
-The difference is what the shape is *for*, which is authorial intent, so it is carried
-as `nif_skin_instance` on the FBX skin deformer rather than derived. A scene that never
-was a NIF has no answer to carry, and `FbxToNifOptions.SkinInstanceType` decides — the
-dismember form by default, since new Skyrim content is mostly armour and body parts, and
-a shape with slots it does not need is easier to live with than one that needs slots it
-has not got.
+So what is carried is not the class but **the body slots themselves** — one per skin
+partition, saying which part of a body that partition is. The class then follows: a shape
+with slots is a `BSDismemberSkinInstance`, one without is a plain `NiSkinInstance`, and
+the two can never disagree because there is only one fact.
+
+Slots travel on the FBX skin deformer as `body_slots` (a count) and one
+`body_slot_<i>` / `body_slot_<i>_flags` pair each. They are written **by name**, since
+the numbers differ between creature skeletons and a name is something a reader can
+check; a name the schema does not know is parsed as a number, so a slot from a skeleton
+this build has never seen still survives.
+
+The array is sized to the *partition* count rather than the carried count, because it
+describes those partitions and they are rebuilt rather than carried. A partition past
+the end of the list takes the last slot.
+
+A scene that never was a NIF has no slots to carry, and
+`FbxToNifOptions.SkinInstanceType` decides — the dismember form by default, since new
+Skyrim content is mostly armour and body parts.
+
+ck-cmd carries none of this. Its export never mentions body parts at all, and its import
+sets every partition to `SBP_32_BODY` with `PF_EDITOR_VISIBLE | PF_START_NET_BONESET`
+(L3100) in the branch that cannot run. This port wrote every slot as zero — the torso —
+until the slots were carried.
 
 #### 5.3.0 Skinned SE vertex data
 

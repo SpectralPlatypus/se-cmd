@@ -336,6 +336,39 @@ namespace SECmd.Tests
         }
 
                 [Fact]
+        public void ASkinKeepsItsBodySlots()
+        {
+            // A slot says which part of a body a partition is, and that is the whole
+            // of the difference between the two skin instance classes. The importer
+            // used to write every slot as zero -- the torso -- which is also what
+            // ck-cmd does, in a branch that cannot run.
+            NifModel source = Load("nifly/TestNifFile_Skinned_SE.nif");
+
+            NifItem before = source.Blocks.First(b => b.Name == "BSDismemberSkinInstance");
+
+            var expected = source.FindItem(before, "Partitions")!.Children
+                .Select(p => (
+                    Part: p.Children.First(c => c.Name == "Body Part").Value.ToUInt(),
+                    Flags: p.Children.First(c => c.Name == "Part Flag").Value.ToUInt()))
+                .ToList();
+
+            // The fixture's slot is 32, so a rebuild that defaults to zero fails here
+            // rather than passing by accident.
+            Assert.Contains(expected, e => e.Part != 0);
+
+            NifModel rebuilt = RoundTrip(source);
+
+            NifItem after = rebuilt.Blocks.First(b => b.Name == "BSDismemberSkinInstance");
+
+            Assert.Equal(
+                expected,
+                rebuilt.FindItem(after, "Partitions")!.Children
+                    .Select(p => (
+                        Part: p.Children.First(c => c.Name == "Body Part").Value.ToUInt(),
+                        Flags: p.Children.First(c => c.Name == "Part Flag").Value.ToUInt())));
+        }
+
+        [Fact]
         public void ASkinKeepsTheInstanceClassItHad()
         {
             // Nothing about a mesh decides between these. A dismember instance carries
