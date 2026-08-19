@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Globalization;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Archives;
+using SECmd.Conversion;
+using SECmd.Fbx;
 using SECmd.Nif;
 using Xunit;
 
@@ -199,6 +201,33 @@ namespace SECmd.Tests
                 "meshes/creationclub/_shared/dungeons/ayleidruins/interior/arwelkydclusterfx01.nif",
                 "meshes/creationclub/_shared/dungeons/ayleidruins/interior/arwelkydplanter01.nif"
             ]);
+        }
+
+        [Fact]
+        public void NoVanillaMeshExportsGeometryThatIsNowhere()
+        {
+            // A mesh can export with every count right and every vertex in the same
+            // place. That is what a BSDynamicTriShape did: its positions live in a
+            // buffer the engine rewrites, the static entries beside them are zero, and
+            // reading those collapsed the shape onto the origin. Nothing that counts
+            // things could see it.
+            //
+            // The fixtures cover the shapes nifly ships. This covers the shapes the
+            // game ships, which is where a conditional field nobody has thought about
+            // will actually turn up.
+            Sweep((original, db) =>
+            {
+                using var input = new MemoryStream(original);
+                NifModel model = NifModel.Load(input, db);
+
+                // NaN geometry is excluded: the game ships a handful of effect meshes
+                // whose vertices and node rotations are NaN in the file itself, and
+                // they decode through the same path as the shapes beside them that
+                // come out fine. What this is looking for is a collapse onto a finite
+                // point, which is what a field read from the wrong place produces.
+                return DegenerateGeometryTests.Degenerate(
+                    new FbxScene(new NifToFbx(model).Convert()), reportNotANumber: false);
+            });
         }
 
         /// <summary>The reason the two differ, or null when they do not.</summary>

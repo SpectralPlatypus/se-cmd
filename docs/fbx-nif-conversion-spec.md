@@ -1110,6 +1110,28 @@ Both directions depend on ordering that is easy to lose:
 
 ---
 
+## 6A. Meshes the game ships with NaN in them
+
+A handful of vanilla effect meshes hold vertices that are **not numbers** — in
+`meshes/magic/explosionilusiondark01.nif` the `lightRays` shape has 297 NaN vertices,
+and the node above it has a rotation matrix that is NaN in all nine entries. Three such
+meshes turned up in a 3,000-file sample, all under `meshes/magic/`.
+
+This is the file's own data and not a decoding fault. The shape beside it in the same
+file, `lightRaysIC01:0`, shares its vertex descriptor exactly — `0x0003B00007650408`,
+half-precision positions — and decodes to real numbers through the same code.
+
+Two consequences:
+
+- The export **warns** rather than staying silent. A DCC tool handed a NaN vertex does
+  not report a bad mesh; it misbehaves, and the person looking at it has no reason to
+  suspect the source.
+- The corpus sweep for collapsed geometry (§7) ignores an all-NaN mesh and fails only on
+  a collapse onto a *finite* point, which is the shape of a field read from the wrong
+  place. The fixture-level test admits neither, since no fixture has one.
+
+---
+
 ## 7. What is not round-tripped
 
 Three different things, and they are worth keeping apart. Something derived is not a

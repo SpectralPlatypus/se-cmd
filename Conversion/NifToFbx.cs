@@ -744,6 +744,14 @@ namespace SECmd.Conversion
             else
                 scene.Connect(holder, parent);
 
+            // The game ships a few effect meshes whose vertices are NaN in the file
+            // itself -- explosionilusiondark01's lightRays among them, where the
+            // node's rotation matrix is NaN in all nine entries too. Writing that into
+            // an FBX passes the problem to whatever opens it, and a DCC tool given a
+            // NaN vertex does not report a bad mesh, it misbehaves.
+            if (mesh.Vertices.Any(v => float.IsNaN(v.X) || float.IsNaN(v.Y) || float.IsNaN(v.Z)))
+                Warnings.Add($"{name}: the source's vertices are not numbers, the mesh is exported as it is");
+
             FbxObject geometry = FbxMeshWriter.AddGeometry(scene, name, mesh);
 
             // Which geometry class this was. BSDynamicTriShape and BSTriShape hold the
