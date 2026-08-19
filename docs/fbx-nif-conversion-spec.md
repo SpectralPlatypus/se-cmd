@@ -431,6 +431,32 @@ Two exporter workarounds:
 
 Alpha presence is detected from any colour with alpha < 1.
 
+#### 5.3.0 Known gap: skinned SE vertex data
+
+`BSTriShape` packs everything about a vertex inline, and for a skinned shape that
+includes four bone weights and four bone indices — twelve bytes — announced by the
+`Skinned` attribute and located by `Skinning Data Offset`. **This port writes neither.**
+
+`BuildVertexDescriptor` has no skinning branch, so a skinned SE shape rebuilt from FBX
+comes back with a 28-byte vertex where the source had 40:
+
+| | Source | Rebuilt |
+| --- | --- | --- |
+| `Vertex Desc` | `0x0005B0007065040A` | `0x0001B00000650407` |
+| Vertex Data Size | 10 (40 bytes) | 7 (28 bytes) |
+| Skinning Data Offset | 7 | 0 |
+| Attributes | includes `VF_Skinned` | omits it |
+
+The skinning that *is* written — `NiSkinInstance`, `NiSkinData`, `NiSkinPartition` — is
+correct, and that is what makes this quiet. Every block a skinned mesh should have is
+present and the bones are all named, but SE reads its weights from the vertex buffer
+rather than from `NiSkinData`, so the mesh renders rigid while looking fully rigged in a
+NIF editor. The weights themselves survive the trip as far as `FbxSkinIO`, which reads
+them per vertex; they are simply never written into the vertex.
+
+LE is unaffected: `NiTriShapeData` keeps no per-vertex skinning, and `NiSkinData` is
+where the engine reads it.
+
 #### 5.3.1 Tangent space
 
 ck-cmd does not compute tangents. It calls the FBX SDK's
