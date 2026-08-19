@@ -644,6 +644,10 @@ namespace SECmd.Conversion
                 scene.Connect(holder, parent);
 
             FbxObject geometry = FbxMeshWriter.AddGeometry(scene, name, mesh);
+
+            // Which geometry class this was. BSDynamicTriShape and BSTriShape hold the
+            // same vertices and are not the same thing to the engine.
+            FbxNodeType.Write(geometry, shape);
             scene.Connect(geometry, holder);
 
             ConvertSkin(scene, shape, geometry);

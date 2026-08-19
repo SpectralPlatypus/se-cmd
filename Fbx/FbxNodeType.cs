@@ -13,6 +13,10 @@ namespace SECmd.Fbx
     /// <c>NiNode</c> loses that with nothing to show for it — the scene still has the
     /// right shape, and the engine treats it differently.
     ///
+    /// The same applies to geometry, where the class decides what the engine does with
+    /// the mesh rather than where it sits: a <c>BSDynamicTriShape</c> keeps a second
+    /// vertex buffer the engine writes into every frame, which is how a cloak moves.
+    ///
     /// The root matters most. <c>BSXFlags</c> asks twice whether the root is exactly
     /// <c>NiNode</c>, once for the external-skeleton test behind bit 0 and once for the
     /// root-collision test behind bit 3, so a body part whose root is rebuilt as
@@ -35,11 +39,11 @@ namespace SECmd.Fbx
         /// scene from elsewhere — or one whose property has been edited into something
         /// else — cannot turn a node into a shape or a controller.
         /// </remarks>
-        public static string Read(FbxObject node, NifModel model, string fallback)
+        public static string Read(FbxObject node, NifModel model, string fallback, string ancestor = "NiNode")
         {
             string name = node.Properties.GetString(Property);
 
-            if (name.Length == 0 || !model.KnowsBlock(name) || !model.Database.Inherits(name, "NiNode"))
+            if (name.Length == 0 || !model.KnowsBlock(name) || !model.Database.Inherits(name, ancestor))
                 return fallback;
 
             return name;

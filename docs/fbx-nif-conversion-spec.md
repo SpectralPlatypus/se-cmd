@@ -541,6 +541,23 @@ ones.
 This mirrors the collision material (§4.8), which is likewise both a name a DCC tool can
 edit and an exact value on reimport.
 
+#### 5.3.3 Known gap: BSDynamicTriShape
+
+A dynamic shape is rebuilt as a plain `BSTriShape`, and deliberately so.
+
+`BSDynamicTriShape` keeps a second vertex buffer — `Vertices`, four floats each, sized
+by `Dynamic Data Size` — which the engine writes into every frame, and which is how a
+cloak or a hanging chain moves. In the files examined it is not a *copy* of the static
+positions: the shape has **no `Vertex Data` array at all**, and the dynamic buffer is
+where its positions live. The fourth component is populated (values around ±1, so
+plausibly a packed bitangent) and is not carried anywhere.
+
+The export records the class like any other (§5.2 nodes), so rebuilding one is a
+one-line change. It was tried and reverted: the class came back correctly and the
+buffer came back empty, giving a dynamic shape with no vertices, which is worse than the
+static shape it replaced. Reproducing it needs the buffer carried across and the meaning
+of the fourth component settled first.
+
 #### 5.3.1 Tangent space
 
 ck-cmd does not compute tangents. It calls the FBX SDK's

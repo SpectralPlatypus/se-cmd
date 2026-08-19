@@ -1071,6 +1071,10 @@ namespace SECmd.Conversion
         /// </remarks>
         private NifItem BuildBsTriShape(FbxObject geometry, MeshGeometry mesh, bool skinned)
         {
+            // Deliberately not FbxNodeType.Read here: see the note in
+            // `docs/fbx-nif-conversion-spec.md` §5.3.3. A BSDynamicTriShape keeps its
+            // positions in a second buffer this does not rebuild, so asking for one
+            // produces a shape with no vertices at all.
             NifItem shape = _model.InsertBlock("BSTriShape");
             _model.SetString(shape, "Name", NameEncoding.Unsanitize(geometry.Name));
 
