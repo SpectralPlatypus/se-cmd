@@ -336,6 +336,37 @@ namespace SECmd.Tests
         }
 
                 [Fact]
+        public void AParticleSystemKeepsTheControllerThatRunsIt()
+        {
+            // NiPSysUpdateCtlr holds no interpolator and no keys. It is not animation
+            // -- it is the switch that makes the system run at all -- so the animation
+            // layer cannot see it: that layer recognises a controller by what its
+            // interpolator drives, and this one has none.
+            NifModel source = Load("nifly/TestNifFile_Animated_LE.nif");
+
+            Assert.Contains(source.Blocks, b => b.Name == "NiPSysUpdateCtlr");
+
+            NifModel rebuilt = RoundTrip(source);
+
+            NifItem update = Assert.Single(rebuilt.Blocks, b => b.Name == "NiPSysUpdateCtlr");
+            NifItem system = Assert.Single(rebuilt.Blocks, b => b.Name == "NiParticleSystem");
+
+            // On the system's chain and pointing back at it, not merely present.
+            Assert.Equal(system, rebuilt.GetRef(update, "Target"));
+
+            var chain = new List<NifItem>();
+
+            for (NifItem? c = rebuilt.GetRef(system, "Controller");
+                 c is not null;
+                 c = rebuilt.GetRef(c, "Next Controller"))
+            {
+                chain.Add(c);
+            }
+
+            Assert.Contains(update, chain);
+        }
+
+                [Fact]
         public void ASequencedControllerIsAttachedAndBlended()
         {
             // Attached controllers and sequences are two halves of one arrangement.

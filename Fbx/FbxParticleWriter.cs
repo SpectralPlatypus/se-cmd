@@ -137,6 +137,117 @@ namespace SECmd.Fbx
 
             foreach (NifItem modifier in model.GetRefArray(system, "Modifiers"))
                 AddModifier(scene, node, model, modifier);
+
+            AddStructuralControllers(node, model, system);
+        }
+
+        /// <summary>The property counting the system's structural controllers.</summary>
+        public const string ControllerCountProperty = "particle_controllers";
+
+        /// <summary>Prefix on one structural controller's fields, before its index.</summary>
+        public const string ControllerPrefix = "npc_";
+
+        /// <summary>
+        /// Carries the controllers on a particle system that animate nothing.
+        /// </summary>
+        /// <remarks>
+        /// <c>NiPSysUpdateCtlr</c> holds no interpolator and no keys. It is not
+        /// animation, it is the switch that makes the system run at all, and the
+        /// animation layer cannot carry it: that layer recognises a controller by what
+        /// its interpolator drives, and this one has none (§5A.6).
+        ///
+        /// So it travels here instead, with the rest of the system's structure, which
+        /// is also where it belongs — it says something about the system, not about a
+        /// timeline. Controllers that *do* hold an interpolator are left alone; they
+        /// are animation and go the other way, and carrying them here as well would
+        /// rebuild them twice.
+        /// </remarks>
+        private static void AddStructuralControllers(FbxObject node, NifModel model, NifItem system)
+        {
+            var controllers = new List<NifItem>();
+
+            for (NifItem? controller = model.GetRef(system, "Controller");
+                 controller is not null;
+                 controller = model.GetRef(controller, "Next Controller"))
+            {
+                if (model.GetRef(controller, "Interpolator") is null)
+                    controllers.Add(controller);
+            }
+
+            if (controllers.Count == 0)
+                return;
+
+            node.Properties.SetUserString(
+                ControllerCountProperty,
+                controllers.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+            for (int i = 0; i < controllers.Count; i++)
+            {
+                string prefix = $"{ControllerPrefix}{i}_";
+
+                node.Properties.SetUserString($"{prefix}type", controllers[i].Name);
+
+                NifFieldCodec.Write(
+                    model, controllers[i], prefix,
+                    (name, value) => node.Properties.SetUserString(name, value),
+                    child => child.Name is "Next Controller" or "Target");
+            }
+        }
+
+        /// <summary>Rebuilds the controllers that animate nothing, onto the system.</summary>
+        public static void ReadStructuralControllers(
+            FbxObject node, NifModel model, NifItem system, List<string> warnings)
+        {
+            string text = node.Properties.GetString(ControllerCountProperty);
+
+            if (!int.TryParse(text, System.Globalization.NumberStyles.Integer,
+                              System.Globalization.CultureInfo.InvariantCulture, out int count))
+            {
+                return;
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                string prefix = $"{ControllerPrefix}{i}_";
+                string type = node.Properties.GetString($"{prefix}type");
+
+                if (type.Length == 0)
+                    continue;
+
+                if (!model.KnowsBlock(type) || !model.Database.Inherits(type, "NiTimeController"))
+                {
+                    warnings.Add($"{model.GetName(system)}: \"{type}\" is not a controller this build knows, it is dropped");
+                    continue;
+                }
+
+                NifItem controller = model.InsertBlock(type);
+
+                NifFieldCodec.Read(
+                    model, controller, prefix,
+                    name => node.Properties.GetString(name) is { Length: > 0 } value ? value : null,
+                    child => child.Name is "Next Controller" or "Target");
+
+                model.SetRef(controller, "Target", system);
+
+                Attach(model, system, controller);
+            }
+        }
+
+        /// <summary>Adds a controller to the end of a block's chain.</summary>
+        private static void Attach(NifModel model, NifItem host, NifItem controller)
+        {
+            if (model.GetRef(host, "Controller") is not { } first)
+            {
+                model.SetRef(host, "Controller", controller);
+                return;
+            }
+
+            NifItem last = first;
+
+            while (model.GetRef(last, "Next Controller") is { } next)
+                last = next;
+
+            model.SetRef(last, "Next Controller", controller);
         }
 
         /// <summary>Whether a node stands for a particle modifier.</summary>

@@ -425,6 +425,24 @@ When exporting a rig, `body_part` (from the Havok filter) is stored as a propert
 
 `bhkSPCollisionObject` produces `<name>_sp` with wireframe shading and no transform.
 
+### 4.9A Structural controllers on a particle system
+
+ck-cmd carries none of this: `FBXWrangler.cpp` has no occurrence of `NiParticleSystem`,
+`NiPSysModifier`, or any particle controller, in either direction. See
+`nif-particle-spec.md` for the whole picture; this is the part that touches animation.
+
+A `NiPSysUpdateCtlr` holds no interpolator and no keys. It is not animation — it is the
+switch that makes the system run at all — and the animation layer cannot represent it,
+because that layer recognises a controller by what its interpolator drives (§5A.4).
+
+So it travels with the particle system's structure, as `particle_controllers` (a count)
+and one `npc_<i>_` group per controller, which is also where it belongs: it says
+something about the system, not about a timeline.
+
+The split is on the interpolator. A controller that holds one is animation and goes the
+other way; carrying it here as well would rebuild it twice. `Target` and
+`Next Controller` are not carried, since both are rebuilt from the chain.
+
 ### 4.10 Constraints
 
 `FbxConstraintBuilder` (L2050–2310). For each constraint entity pair, a node named
@@ -1055,7 +1073,7 @@ shifts by `-start`.
 | --- | --- |
 | A track binds by node name | Duplicate names cannot be told apart, in either format |
 | An FBX curve needs keys | An interpolator holding a constant and no data block is dropped (§4.7.4) |
-| A controller needs an interpolator to be recognised | One with none, such as `NiPSysUpdateCtlr`, is not gathered at all |
+| A controller needs an interpolator to be recognised | One with none carries no animation, so this layer cannot see it. Where such a controller matters it travels with the structure instead — see §4.9A for particle systems |
 | One layer per stack | Layered animation is not represented |
 
 ---
@@ -1115,7 +1133,7 @@ Real gaps, each with its reason recorded where it bites.
 | --- | --- | --- |
 | `BSDynamicTriShape`'s second vertex buffer | The class is rebuilt as a plain `BSTriShape`, since asking for a dynamic shape without the buffer gives one with no vertices at all | §5.3.3 |
 | An interpolator holding a constant and no data block | An FBX curve with no keys is not a curve, so a track that says "this value, for this whole sequence" does not survive | §4.7.4 |
-| A controller with no interpolator | Not recognised as animation at all, so `NiPSysUpdateCtlr` and its like are not gathered | §5A.6 |
+| A controller with no interpolator, outside a particle system | Not recognised as animation, and only particle systems carry these structurally so far | §5A.6, §4.9A |
 | Array order within a rebuilt convex hull | The vertices and planes agree, but arrive in the fit's order rather than Havok's, which nif.xml says is lexicographic | §5.7.1 |
 
 ---

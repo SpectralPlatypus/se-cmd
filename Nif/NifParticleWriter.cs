@@ -68,6 +68,10 @@ namespace SECmd.Nif
 
             ResolveLinks(model, links, modifiers, name, pending);
 
+            // The controllers that animate nothing. They are not animation and the
+            // animation layer cannot see them, so they travel with the structure.
+            FbxParticleWriter.ReadStructuralControllers(node, model, system, warnings);
+
             return system;
         }
 
