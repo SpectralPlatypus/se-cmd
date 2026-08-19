@@ -318,6 +318,10 @@ controller's start/stop.
 
 #### 4.7.4 How a property track is named
 
+> This is one piece of a larger picture; §5A covers the animation layer in both
+> directions, including where tracks are found, how keys convert, and what cannot
+> travel.
+
 FBX animates a *named property on a node*. A NIF names what it animates with four
 strings in the sequence's controlled block — controller class, controller id,
 interpolator id, property type — and all four are needed to say what a track drives. So
@@ -854,6 +858,9 @@ disagree with ck-cmd's own rule. Importing them zeroes both, by design.
 
 #### 5.6.0 Attached controllers and sequences are two halves
 
+> §5A covers the animation layer end to end; this is the part that decides what a
+> rebuilt sequence points at.
+
 A file with a `NiControllerManager` carries each animated controller **twice over**, and
 rebuilding only one half leaves an animation with nothing to apply it to:
 
@@ -915,6 +922,141 @@ Two details are not obvious:
   skinned animations exist.
 - When exporting a rig, a `SkeletonID` `NiIntegerExtraData` of `207579012` is added and
   every `NiNode` gets flags `524302`.
+
+---
+
+## 5A. Animation in this port, end to end
+
+§4.7 and §5.6 record what FBXWrangler does. This section records what *this* does, in
+both directions, because the two do not line up field for field and the differences are
+the kind that are invisible when wrong.
+
+Everything passes through one neutral form, `Conversion/AnimationData.cs`, so neither
+side knows about the other:
+
+```
+AnimSequence   name, start, stop, tracks
+  AnimTrack      node name, translation/rotation/scale curves, properties
+    AnimProperty controller identity, one curve per component
+      AnimCurve    keys
+        AnimKey      time, value, interpolation
+```
+
+`AnimSequence` is a NIF `NiControllerSequence` and an FBX `AnimationStack`; `AnimTrack`
+is everything animated on one node. A track is keyed by node *name*, which is what both
+formats use to bind animation to a target, and what makes duplicate node names
+unfixable in either.
+
+### 5A.1 What FBX splits four ways
+
+An `AnimationStack` is the take. An `AnimationLayer` under it holds the tracks — always
+one, named `Default`, as FBXWrangler writes it. An `AnimationCurveNode` binds one
+property of one model, and an `AnimationCurve` under that holds one component's keys.
+
+Vector properties are addressed by axis (`d|X`, `d|Y`, `d|Z`) and scalar ones by their
+own name (`d|` + the property name). That addressing is the only thing that says how
+many curves to expect, so it has to match how the property was declared.
+
+A property must be **declared on the model** as well as animated: a curve bound to a
+property the model does not have is dropped by most importers without complaint, since
+there is nothing for it to drive. So each property is declared with its first key's
+value as the static one, typed by what it is — `ColorRGB` for a colour, `Visibility`
+for visibility, `bool` or `Number` otherwise.
+
+Time is FBX's integer unit, 46,186,158,000 per second, rounded on the way out.
+
+Both spans are written on the stack — `LocalStart`/`LocalStop` and
+`ReferenceStart`/`ReferenceStop` — because importers differ over which they trust.
+
+### 5A.2 Key interpolation
+
+| NIF `KeyType` | Neutral | FBX `KeyAttrFlags` |
+| --- | --- | --- |
+| 1 `LINEAR_KEY` | `Linear` | `0x00000004` |
+| 2 `QUADRATIC_KEY` | `Cubic` | `0x00000008 \| 0x00000100` |
+| 5 `CONST_KEY` | `Constant` | `0x00000002` |
+
+Quadratic keys carry tangents FBX cannot express directly, so `TangentAuto` is set and
+the importer chooses tangents that reproduce the shape.
+
+FBX stores interpolation run-length encoded: `KeyAttrFlags` holds each distinct value
+once and `KeyAttrRefCount` says how many consecutive keys share it.
+
+Coming back, a NIF key group has **one** interpolation for all its keys where FBX has
+one per key, so the group takes the smoothest present — constant is coarsest, then
+linear, then quadratic. Taking the first key's would quietly flatten a curve whose first
+segment happens to be linear.
+
+### 5A.3 Rotation
+
+The NIF side has two forms and they are read differently:
+
+- **Quaternion keys** are decomposed to Euler XYZ, and written back as quaternions.
+- **`XYZ Rotations`** (rotation type 4) are three separate float groups, in radians.
+  They are read as three curves and always marked cubic, because the three groups can
+  disagree about interpolation and a single track cannot.
+
+FBX rotation is Euler XYZ in **degrees**, so radians convert on the way out and back.
+
+### 5A.4 Where animation is found on the way out
+
+`ReadAnimations` gathers from two places, and the second exists because FBX has no way
+to say what it finds:
+
+1. Every `NiSequence` in the file becomes a sequence, read through its controlled
+   blocks.
+2. Controllers **no sequence names** are gathered into one invented sequence called
+   `Take 001` — the name FBXWrangler gives the stack it invents for the same reason
+   (§4.7.3). §5.6.1 undoes this on the way back.
+
+A controller is claimed by a sequence if any controlled block points at it, and claimed
+controllers are skipped by the second pass. In a file like Bethesda's animated effects
+the same controller block is both attached to its target and named by every sequence,
+and reading it twice would play it twice.
+
+The chains searched are the node's own and those of the properties hanging off it —
+shader property, alpha property, and the older `Properties` list — because a shader's
+fade is controlled from the property but binds to the node.
+
+Two kinds are deliberately not gathered:
+
+- **Transform controllers**, which move the node and are already the track's own
+  translation, rotation and scale curves.
+- **Flipbook controllers**, which travel by their own carrier with their texture list
+  (§4.3). Gathering them here as well would write them twice, once with textures and
+  once as a bare float track.
+
+A controller is recognised by **what its interpolator drives**, not by its class name:
+anything on a float, a boolean or a point3 interpolator is a named scalar or colour.
+That is what lets `BSEffectShaderPropertyFloatController` and `NiPSysEmitterCtlr` travel
+without either being mentioned by name.
+
+### 5A.5 Where animation goes on the way back
+
+`WriteAnimations` resolves every track's node first, since a sequence with no resolvable
+target is a sequence with nothing to write and the manager should not exist for it. Then:
+
+- A `NiControllerManager` on the root, with a `NiMultiTargetTransformController` naming
+  every node whose **transform** moves — a node listed there without transform keys
+  would be driven to nothing.
+- A `NiDefaultAVObjectPalette` of those targets.
+- One `NiControllerSequence` per sequence, with a `NiTextKeyExtraData` holding the
+  start and end text keys.
+- Per controlled block, an interpolator with the keys, the four identity strings, and
+  the attached controller the entry drives (§5.6.0).
+
+Sequences are written to play **from zero**: where they sat on the source timeline is
+not something the engine has a use for, so the length is `stop - start` and every key
+shifts by `-start`.
+
+### 5A.6 Known limits
+
+| Limit | Consequence |
+| --- | --- |
+| A track binds by node name | Duplicate names cannot be told apart, in either format |
+| An FBX curve needs keys | An interpolator holding a constant and no data block is dropped (§4.7.4) |
+| A controller needs an interpolator to be recognised | One with none, such as `NiPSysUpdateCtlr`, is not gathered at all |
+| One layer per stack | Layered animation is not represented |
 
 ---
 
