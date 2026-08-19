@@ -202,7 +202,14 @@ namespace SECmd.Conversion
             // runtime buffer the file only sizes -- so it stays an empty node with
             // the system carried alongside it.
             if (FbxParticleWriter.IsParticleSystem(_model, block))
+            {
                 FbxParticleWriter.AddParticleSystem(scene, node, _model, block);
+
+                // A particle system is a shape: it has a shader and an alpha property
+                // like any other, and they are what the effect actually looks like.
+                // It has no geometry to hang them off, so they attach to the node.
+                AddMaterialTo(scene, block, node, name, geometry: null);
+            }
 
             if (parent is null)
                 scene.ConnectToRoot(node);
@@ -457,6 +464,38 @@ namespace SECmd.Conversion
 
         private static NifVector3 Half(NifVector3 size) =>
             new(size.X * 0.5f, size.Y * 0.5f, size.Z * 0.5f);
+
+        /// <summary>
+        /// Emits a block's shader and alpha properties as an FBX material on a node.
+        /// </summary>
+        /// <param name="geometry">
+        /// The mesh the material applies to, or null for a block that has none — a
+        /// particle system's shader describes a runtime buffer rather than triangles.
+        /// </param>
+        private void AddMaterialTo(
+            FbxScene scene, NifItem shape, FbxObject holder, string name, FbxObject? geometry)
+        {
+            if (ReadMaterial(shape, name) is not { } material)
+                return;
+
+            FbxObject fbxMaterial = FbxMaterialWriter.AddMaterial(scene, material, _options.TexturePath);
+
+            // An effect shader shares almost no fields with a lighting one, so its own
+            // ride across flat on the same material rather than being forced through
+            // the common form.
+            if (_model.GetRef(shape, "Shader Property") is { } shader
+                && FbxEffectShader.Is(_model, shader))
+            {
+                FbxEffectShader.Write(fbxMaterial, _model, shader);
+            }
+
+            // A material belongs to the node carrying the mesh, not the mesh, and the
+            // geometry's material element points at index 0.
+            scene.Connect(fbxMaterial, holder);
+
+            if (geometry is not null)
+                FbxMeshWriter.AddSingleMaterialElement(geometry);
+        }
 
         private IEnumerable<NifItem> ChildShapesOf(NifItem shape)
         {
@@ -714,24 +753,7 @@ namespace SECmd.Conversion
 
             ConvertSkin(scene, shape, geometry);
 
-            if (ReadMaterial(shape, name) is { } material)
-            {
-                FbxObject fbxMaterial = FbxMaterialWriter.AddMaterial(scene, material, _options.TexturePath);
-
-                // An effect shader shares almost no fields with a lighting one, so its
-                // own ride across flat on the same material rather than being forced
-                // through the common form.
-                if (_model.GetRef(shape, "Shader Property") is { } shader
-                    && FbxEffectShader.Is(_model, shader))
-                {
-                    FbxEffectShader.Write(fbxMaterial, _model, shader);
-                }
-
-                // A material belongs to the node carrying the mesh, not the mesh,
-                // and the geometry's material element points at index 0.
-                scene.Connect(fbxMaterial, holder);
-                FbxMeshWriter.AddSingleMaterialElement(geometry);
-            }
+            AddMaterialTo(scene, shape, holder, name, geometry);
 
             // A flipbook controller hangs off a property rather than off the shape,
             // but the node is what an importer has to put it back on.

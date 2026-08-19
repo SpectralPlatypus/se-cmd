@@ -336,6 +336,28 @@ namespace SECmd.Tests
         }
 
                 [Fact]
+        public void AParticleSystemKeepsItsShader()
+        {
+            // A particle system is a shape: it has a shader and an alpha property like
+            // any other, and they are what the effect actually looks like. It has no
+            // geometry for them to hang off, which is why the geometry path never saw
+            // them and they were dropped.
+            NifModel source = Load("nifly/TestNifFile_Animated_LE.nif");
+
+            NifItem system = Assert.Single(source.Blocks, b => b.Name == "NiParticleSystem");
+
+            string texture = source.GetString(source.GetRef(system, "Shader Property")!, "Source Texture");
+
+            Assert.NotEqual(string.Empty, texture);
+
+            NifModel rebuilt = RoundTrip(source);
+            NifItem after = Assert.Single(rebuilt.Blocks, b => b.Name == "NiParticleSystem");
+
+            Assert.NotNull(rebuilt.GetRef(after, "Alpha Property"));
+            Assert.Equal(texture, rebuilt.GetString(rebuilt.GetRef(after, "Shader Property")!, "Source Texture"));
+        }
+
+                [Fact]
         public void AParticleSystemKeepsTheControllerThatRunsIt()
         {
             // NiPSysUpdateCtlr holds no interpolator and no keys. It is not animation

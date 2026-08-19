@@ -431,6 +431,11 @@ ck-cmd carries none of this: `FBXWrangler.cpp` has no occurrence of `NiParticleS
 `NiPSysModifier`, or any particle controller, in either direction. See
 `nif-particle-spec.md` for the whole picture; this is the part that touches animation.
 
+A particle system is also a *shape*: it carries a shader property and an alpha property
+like any other, and they are what the effect looks like. It has no geometry for them to
+hang off — its vertices are a runtime buffer the file only sizes — so the geometry path
+never sees it, and the material attaches to the node instead.
+
 A `NiPSysUpdateCtlr` holds no interpolator and no keys. It is not animation — it is the
 switch that makes the system run at all — and the animation layer cannot represent it,
 because that layer recognises a controller by what its interpolator drives (§5A.4).

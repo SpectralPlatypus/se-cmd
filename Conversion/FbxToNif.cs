@@ -263,6 +263,11 @@ namespace SECmd.Conversion
             _model.SetTransform(node, transform);
             _nodesByName[name] = node;
 
+            // A particle system is a shape and carries a shader and an alpha property
+            // like any other; it just has no geometry for them to hang off.
+            if (NifParticleWriter.HasParticleSystem(model))
+                BuildMaterial(node, model);
+
             FbxExtraDataWriter.ReadExtraData(model, _model, node, Warnings);
             FbxMultiBound.Read(model, _model, node, Warnings);
 
