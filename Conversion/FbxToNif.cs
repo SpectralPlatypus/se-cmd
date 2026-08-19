@@ -903,11 +903,16 @@ namespace SECmd.Conversion
             if (mesh.HasUvs)
                 TangentSpace.Generate(mesh);
 
+            // Read before the shape is built rather than after. SE packs the bone
+            // weights into the vertex, so the descriptor has to know whether the shape
+            // is skinned before a single vertex is sized.
+            SkinData? skin = FbxSkinIO.ReadSkin(_scene, geometry);
+
             // BSTriShape does not exist before Skyrim SE, so the edition decides
             // which geometry block to emit.
             NifItem shape = _options.LegendaryEdition
                 ? BuildNiTriShape(geometry, mesh)
-                : BuildBsTriShape(geometry, mesh);
+                : BuildBsTriShape(geometry, mesh, skin is not null);
 
             _model.SetTransform(shape, transform);
 
@@ -929,10 +934,86 @@ namespace SECmd.Conversion
             // Deferred: the bones are nodes elsewhere in the scene and may not have
             // been converted yet, so skins are wired up once the whole tree is
             // built.
-            if (FbxSkinIO.ReadSkin(_scene, geometry) is { } skin)
+            if (skin is not null)
                 _pendingSkins.Add((shape, skin, mesh.Vertices.Count, mesh.Triangles));
 
             return shape;
+        }
+
+        /// <summary>
+        /// Packs the bone weights into an SE shape's vertices.
+        /// </summary>
+        /// <remarks>
+        /// SE reads a skinned mesh's weights from the vertex buffer, not from
+        /// <c>NiSkinData</c>, so a shape that has the blocks but not these renders
+        /// rigid while looking fully rigged in a NIF editor.
+        ///
+        /// The indices are into the shape's own bone list, which is only settled once
+        /// the skin has been written: a bone whose node is missing is dropped there,
+        /// and every index after it moves. So the list is read back and matched by
+        /// name rather than assumed to be the order the skin arrived in.
+        /// </remarks>
+        private void WriteVertexSkinning(NifItem shape, SkinData skin)
+        {
+            if (_model.FindItem(shape, "Vertex Data") is not { } vertices
+                || _model.GetRef(shape, "Skin") is not { } instance)
+            {
+                return;
+            }
+
+            var boneIndex = new Dictionary<string, uint>(StringComparer.Ordinal);
+            uint next = 0;
+
+            foreach (NifItem bone in _model.GetRefArray(instance, "Bones"))
+                boneIndex.TryAdd(_model.GetName(bone), next++);
+
+            var byVertex = skin.ByVertex();
+
+            for (int i = 0; i < vertices.Children.Count; i++)
+            {
+                NifItem vertex = vertices.Children[i];
+
+                if (_model.FindItem(vertex, "Bone Weights") is not { } weights
+                    || _model.FindItem(vertex, "Bone Indices") is not { } indices)
+                {
+                    return;
+                }
+
+                // Both are fixed four-element arrays, but nothing has sized them yet:
+                // a freshly inserted block leaves its arrays empty until asked, and
+                // writing into an array with no elements writes nowhere.
+                _model.UpdateArraySize(weights);
+                _model.UpdateArraySize(indices);
+
+                if (!byVertex.TryGetValue((ushort)i, out var influences))
+                    continue;
+
+                // Four is what the vertex holds, and ByVertex has already put the
+                // heaviest first, so the ones that do not fit are the ones to lose.
+                float total = 0f;
+                int used = Math.Min(4, influences.Count);
+
+                for (int j = 0; j < used; j++)
+                    total += influences[j].Weight;
+
+                for (int j = 0; j < used && j < weights.Children.Count; j++)
+                {
+                    (int bone, float weight) = influences[j];
+
+                    string name = bone < skin.Bones.Count ? skin.Bones[bone].Name : string.Empty;
+
+                    if (!boneIndex.TryGetValue(name, out uint index))
+                        continue;
+
+                    // Renormalised over the four that were kept, so a vertex whose
+                    // fifth influence was dropped is not left slightly limp.
+                    weights.Children[j].Value.SetFloat(total > 0f ? weight / total : 0f);
+
+                    if (j < indices.Children.Count)
+                        indices.Children[j].Value.SetCount(index);
+
+                }
+            }
         }
 
         /// <summary>Skins waiting for the whole node tree to exist.</summary>
@@ -957,6 +1038,8 @@ namespace SECmd.Conversion
 
                 foreach (string bone in missing)
                     Warnings.Add($"{_model.GetName(shape)}: no node named \"{bone}\", its influence is dropped");
+
+                WriteVertexSkinning(shape, skin);
             }
 
             _pendingSkins.Clear();
@@ -986,12 +1069,12 @@ namespace SECmd.Conversion
         /// conditional on those same flags, so the descriptor has to be written
         /// before the array is sized or the elements come out the wrong shape.
         /// </remarks>
-        private NifItem BuildBsTriShape(FbxObject geometry, MeshGeometry mesh)
+        private NifItem BuildBsTriShape(FbxObject geometry, MeshGeometry mesh, bool skinned)
         {
             NifItem shape = _model.InsertBlock("BSTriShape");
             _model.SetString(shape, "Name", NameEncoding.Unsanitize(geometry.Name));
 
-            var descriptor = BuildVertexDescriptor(mesh);
+            var descriptor = BuildVertexDescriptor(mesh, skinned);
 
             _model.FindItem(shape, "Vertex Desc")?.Value.SetCount(descriptor.Value);
 
@@ -1069,9 +1152,13 @@ namespace SECmd.Conversion
         /// Works out the vertex descriptor for a mesh: which attributes are present,
         /// how large a vertex is, and where each attribute sits inside one.
         /// </summary>
-        private static (ulong Value, int VertexSize) BuildVertexDescriptor(MeshGeometry mesh)
+        private static (ulong Value, int VertexSize) BuildVertexDescriptor(
+            MeshGeometry mesh, bool skinned)
         {
             var flags = VertexFlags.Vertex;
+
+            if (skinned)
+                flags |= VertexFlags.Skinned;
 
             if (mesh.HasUvs)
                 flags |= VertexFlags.UV;
@@ -1116,6 +1203,15 @@ namespace SECmd.Conversion
             {
                 desc.Set(BSVertexDesc.Member.ColorOffset, offset);
                 offset += 4;
+            }
+
+            if (skinned)
+            {
+                // Four half-precision weights and four byte indices, twelve bytes. SE
+                // reads a skinned mesh's weights from here and not from NiSkinData, so
+                // a shape without them is fully rigged in an editor and rigid in game.
+                desc.Set(BSVertexDesc.Member.SkinningDataOffset, offset);
+                offset += 12;
             }
 
             desc.VertexSize = offset;

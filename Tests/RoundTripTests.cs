@@ -191,6 +191,40 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void ASkinnedSeShapeCarriesItsWeightsInTheVertex()
+        {
+            // SE reads a skinned mesh's weights from the vertex buffer, not from
+            // NiSkinData. A shape with the skinning blocks but not these is fully
+            // rigged in a NIF editor and rigid in game, which is as quiet as this
+            // gets.
+            NifModel source = Load("nifly/TestNifFile_Skinned_SE.nif");
+            NifItem sourceShape = source.Blocks.First(b => source.BlockInherits(b, "BSTriShape"));
+
+            ulong descriptor = source.FindItem(sourceShape, "Vertex Desc")!.Value.ToUInt64();
+
+            NifModel rebuilt = RoundTrip(source);
+            NifItem shape = rebuilt.Blocks.First(b => rebuilt.BlockInherits(b, "BSTriShape"));
+
+            // Same layout, which for a skinned shape means the wider vertex: the
+            // twelve bytes of weights and indices, and the bit announcing them.
+            Assert.Equal(descriptor, rebuilt.FindItem(shape, "Vertex Desc")!.Value.ToUInt64());
+
+            NifItem vertices = rebuilt.FindItem(shape, "Vertex Data")!;
+
+            Assert.NotEmpty(vertices.Children);
+
+            foreach (NifItem vertex in vertices.Children)
+            {
+                float total = rebuilt.FindItem(vertex, "Bone Weights")!
+                    .Children.Sum(c => c.Value.ToFloat());
+
+                // Every vertex is fully weighted. A vertex summing to less is one the
+                // engine drags towards the origin.
+                Assert.Equal(1f, total, 3);
+            }
+        }
+
+                [Fact]
         public void TheCollisionObjectKeepsItsFlags()
         {
             // bhkCOFlags says how the body and its node keep in step: SET_LOCAL reads
