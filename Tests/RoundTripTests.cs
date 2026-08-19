@@ -336,6 +336,65 @@ namespace SECmd.Tests
         }
 
                 [Fact]
+        public void ASkeletonAuthoredElsewhereIsStillASkeleton()
+        {
+            // The case that has no provenance to carry: a rig built in a DCC tool and
+            // brought in for the first time. Without the classes there is nothing to
+            // restore, and a plain bhkCollisionObject means the engine does not treat
+            // the file as a ragdoll however many bones and constraints it has.
+            //
+            // ck-cmd covers this with an export_rig flag the caller has to know to
+            // set. The constraints say it instead: a ragdoll constraint is something
+            // only a skeleton has.
+            NifModel source = Load("xpmsse/skeleton_cow.nif");
+
+            var scene = new FbxScene(new NifToFbx(source).Convert());
+
+            // Strip what a scene from elsewhere would never have had.
+            int stripped = 0;
+
+            foreach (FbxObject node in scene.Objects.Where(o => o.Class == "Model"))
+            {
+                foreach (string property in new[]
+                         {
+                             FbxCollisionObject.TypeProperty,
+                             FbxCollisionObject.BodyTypeProperty,
+                             FbxCollisionObject.HeirGainProperty,
+                             FbxCollisionObject.VelGainProperty
+                         })
+                {
+                    // Renaming is how a property is disabled here: the reader looks
+                    // them up by name, so a renamed one is invisible to it.
+                    if (node.Properties.Find(property) is { } found)
+                    {
+                        found.Node.Name = "P_stripped";
+                        stripped++;
+                    }
+                }
+            }
+
+            Assert.NotEqual(0, stripped);
+
+            NifModel rebuilt = new FbxToNif(
+                scene,
+                new FbxToNifOptions
+                {
+                    RootName = source.GetName(
+                        source.GetBlock(source.FindItem(source.Footer, "Roots")!.Children[0])!),
+                    Version = source.Version,
+                    UserVersion = source.UserVersion,
+                    LegendaryEdition = source.BSVersion < 100
+                }).Convert(Db);
+
+            Assert.Equal(
+                source.Blocks.Count(b => b.Name == "bhkBlendCollisionObject"),
+                rebuilt.Blocks.Count(b => b.Name == "bhkBlendCollisionObject"));
+
+            // The flags are the point: bit 2 says the engine has a ragdoll.
+            Assert.Equal(source.Calculate(), rebuilt.Calculate());
+        }
+
+                [Fact]
         public void ASkeletonComesBackASkeleton()
         {
             // A bhkBlendCollisionObject is not merely another collision class: the

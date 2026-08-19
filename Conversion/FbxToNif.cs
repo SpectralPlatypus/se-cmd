@@ -56,6 +56,26 @@ namespace SECmd.Conversion
         /// </remarks>
         public string SkinInstanceType { get; set; } = "BSDismemberSkinInstance";
 
+        /// <summary>
+        /// Build the collision of a skeleton rather than of an object.
+        /// </summary>
+        /// <remarks>
+        /// A skeleton's collision objects are <c>bhkBlendCollisionObject</c>s and its
+        /// bodies plain <c>bhkRigidBody</c>s, where an object's are
+        /// <c>bhkCollisionObject</c> and <c>bhkRigidBodyT</c>. The difference is not
+        /// cosmetic: the BSXFlags calculation defines a skeleton as *having* a blend
+        /// object, so a rig built without one is not a ragdoll as far as the engine is
+        /// concerned, however many bones and constraints it has.
+        ///
+        /// A scene converted from a NIF carries the classes and this is not consulted.
+        /// It decides for a skeleton authored in a DCC tool, which has nothing to
+        /// carry — the case ck-cmd covers with its <c>export_rig</c> flag.
+        ///
+        /// Null means work it out: a scene with ragdoll constraints in it is a
+        /// skeleton, since nothing else has them.
+        /// </remarks>
+        public bool? SkeletonRig { get; set; }
+
         /// <summary>Rebuild the scene's animation stacks as NIF controller sequences.</summary>
         public bool ImportAnimation { get; set; } = true;
 
@@ -400,19 +420,33 @@ namespace SECmd.Conversion
             }
 
             // A blend collision object is what makes a file a skeleton, so which class
-            // this is decides what the engine thinks the whole file is.
+            // this is decides what the engine thinks the whole file is. Carried when
+            // the scene came from a NIF; otherwise it follows from whether this is a
+            // rig at all.
             NifItem collision = _model.InsertBlock(
-                FbxCollisionObject.TypeOf(bodyNode, _model, "bhkCollisionObject"));
+                FbxCollisionObject.TypeOf(
+                    bodyNode, _model,
+                    IsSkeletonRig() ? "bhkBlendCollisionObject" : "bhkCollisionObject"));
 
             // How the body and its node keep in step -- local transform, follow on
             // animation -- is not visible in the shape and cannot be derived from it.
             FbxCollisionObject.Read(bodyNode, _model, collision);
+
+            // A blend object left at zero gain is a bone that does not follow, so a
+            // rig built from a scene that carried no gains gets the ones ck-cmd uses.
+            if (_model.BlockInherits(collision, "bhkBlendCollisionObject"))
+            {
+                SetFloat(collision, "Heir Gain", 1f);
+                SetFloat(collision, "Vel Gain", 1f);
+            }
+
             FbxCollisionObject.ReadGains(bodyNode, _model, collision);
 
             // bhkRigidBodyT applies its own transform; the plain body ignores it,
             // which is what a skeleton's bodies want since their bones place them.
             NifItem body = _model.InsertBlock(
-                FbxCollisionObject.BodyTypeOf(bodyNode, _model, "bhkRigidBodyT"));
+                FbxCollisionObject.BodyTypeOf(
+                    bodyNode, _model, IsSkeletonRig() ? "bhkRigidBody" : "bhkRigidBodyT"));
 
             // A constraint names the bodies it joins by the node they came from.
             _bodiesByName[name] = body;
@@ -1057,6 +1091,30 @@ namespace SECmd.Conversion
                 }
             }
         }
+
+        /// <summary>
+        /// Whether this scene is a skeleton rather than an object.
+        /// </summary>
+        /// <remarks>
+        /// Only consulted for a scene that carries no classes of its own. Worked out
+        /// from the constraints when the caller has not said: a ragdoll constraint is
+        /// something only a skeleton has, so a scene holding one is a rig — which is
+        /// more than ck-cmd can do, since its <c>export_rig</c> is a flag the caller
+        /// must know to set.
+        /// </remarks>
+        private bool IsSkeletonRig()
+        {
+            if (_options.SkeletonRig is { } stated)
+                return stated;
+
+            _isRig ??= _options.ImportConstraints
+                       && _scene.ReadConstraints().Any(
+                           c => c.Type.Contains("Ragdoll", StringComparison.OrdinalIgnoreCase));
+
+            return _isRig.Value;
+        }
+
+        private bool? _isRig;
 
         /// <summary>Skins waiting for the whole node tree to exist.</summary>
         /// <remarks>

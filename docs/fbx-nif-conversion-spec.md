@@ -896,9 +896,26 @@ The class travels as `nif_collision_type` on the body's node, with the blend for
 The body's class travels too, as `nif_body_type`, because the two go together. ck-cmd
 pairs a blend collision object with a plain `bhkRigidBody` and an ordinary one with
 `bhkRigidBodyT`, which applies its own transform; a skeleton's bodies are placed by their
-bones and do not want that. ck-cmd builds the blend form only when exporting a rig
-(§5.7), a mode this port does not have, so there is nothing to follow and the classes are
-carried instead.
+bones and do not want that.
+
+##### A skeleton authored in a DCC tool
+
+A rig built in Blender or Max and brought in for the first time has no classes to carry,
+and the fallback decides. Getting it wrong is quiet: the file has every bone, every
+constraint and every shape, and the engine does not treat it as a ragdoll.
+
+ck-cmd handles this with an `export_rig` flag (L4868–4886) which switches the collision
+object to the blend form with both gains at 1, the body to a plain `bhkRigidBody`, and
+the transform from local to global. It is a flag the caller has to know to set.
+
+This port takes the flag — `FbxToNifOptions.SkeletonRig` — but leaves it null by
+default and works the answer out instead: **a scene holding a ragdoll constraint is a
+skeleton**, because nothing else has one. Constraints already travel (§4.10), so the
+evidence is there to read, and a rig exported from this tool and stripped of every
+carried property still comes back with its 24 blend objects and its flags at `0xC6`.
+
+A blend object that arrives without gains is given 1 for both, as ck-cmd does: a zero
+gain is a bone that does not follow.
 
 #### 5.7.1 Convex hull plane equations
 
