@@ -101,6 +101,20 @@ namespace SECmd.Nif
                         if (claimed.Contains(controller))
                             continue;
 
+                        // A transform controller moves the node rather than naming
+                        // something on it, so its keys are the track's own curves. It
+                        // is read here and not in ReadStandaloneController, which
+                        // judges a controller by what its interpolator drives and has
+                        // nothing to return for one that drives the node itself.
+                        if (model.GetRef(controller, "Interpolator") is { } interpolator
+                            && model.BlockInherits(interpolator, "NiTransformInterpolator"))
+                        {
+                            if (model.GetRef(interpolator, "Data") is { } data)
+                                ReadTransformTrack(model, data, TrackFor(tracks, name));
+
+                            continue;
+                        }
+
                         if (ReadStandaloneController(model, controller) is { } property)
                             TrackFor(tracks, name).Properties.Add(property);
                     }

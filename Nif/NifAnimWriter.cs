@@ -255,6 +255,11 @@ namespace SECmd.Nif
                     continue;
                 }
 
+                // A track with curves of its own moves the node, which is a transform
+                // controller attached to it rather than anything a sequence names.
+                if (track.Curves.Any(c => c.HasKeys))
+                    WriteTransformController(model, node, track);
+
                 foreach (AnimProperty property in track.Properties)
                 {
                     if (!property.Curves.Any(c => c.HasKeys) || property.ControllerType.Length == 0)
@@ -306,6 +311,37 @@ namespace SECmd.Nif
                         Attach(model, host, controller);
                 }
             }
+        }
+
+        /// <summary>
+        /// Hangs a transform controller on a node, for a track that moves it.
+        /// </summary>
+        /// <remarks>
+        /// The counterpart of the transform half of an invented sequence: keys that
+        /// belong to the node itself rather than to a property of it. A controller of
+        /// this kind that no sequence names is attached and runs on its own, so it is
+        /// rebuilt the same way -- with its own interpolator holding the keys, since
+        /// there is no manager here to blend into.
+        /// </remarks>
+        private static void WriteTransformController(NifModel model, NifItem node, AnimTrack track)
+        {
+            NifItem controller = model.InsertBlock("NiTransformController");
+
+            model.SetRef(controller, "Interpolator", WriteInterpolator(model, track, 0f));
+            model.SetRef(controller, "Target", node);
+
+            model.FindItem(controller, "Flags")?.Value.SetCount(StandaloneControllerFlags);
+            model.FindItem(controller, "Frequency")?.Value.SetFloat(1f);
+            model.FindItem(controller, "Phase")?.Value.SetFloat(0f);
+
+            // The controller's span is the span of the keys it holds; a bare
+            // controller has no sequence to take one from.
+            var times = track.Curves.SelectMany(c => c.Keys).Select(k => k.Time).ToList();
+
+            model.FindItem(controller, "Start Time")?.Value.SetFloat(times.Count > 0 ? times.Min() : 0f);
+            model.FindItem(controller, "Stop Time")?.Value.SetFloat(times.Count > 0 ? times.Max() : 0f);
+
+            Attach(model, node, controller);
         }
 
         /// <summary>Active, and playing forwards on a loop, which is what a bare controller does.</summary>

@@ -747,6 +747,84 @@ namespace SECmd.Tests
             Assert.Equal("NiBlendBoolInterpolator", rebuilt.GetRef(emitter, "Visibility Interpolator")!.Name);
         }
 
+                /// <summary>
+        /// A node with a transform controller of its own, named by no sequence.
+        /// </summary>
+        /// <remarks>
+        /// Built rather than loaded: no fixture has one. Every transform controller
+        /// the fixtures carry belongs to a sequence, which is a different path — and
+        /// which is why the standalone one could be dropped for the whole corpus
+        /// without a single test noticing.
+        /// </remarks>
+        private static NifModel BuildMovingNode()
+        {
+            NifModel model = NifModel.CreateNew(Db);
+
+            NifItem root = model.InsertBlock("NiNode");
+            model.SetString(root, "Name", "root");
+
+            NifItem data = model.InsertBlock("NiTransformData");
+
+            // Translations is a KeyGroup, so its count and interpolation live inside
+            // it rather than beside it.
+            model.FindItem(data, @"Translations\Num Keys")!.Value.SetCount(2);
+            data.InvalidateConditionsRecursive();
+            model.FindItem(data, @"Translations\Interpolation")!.Value.SetCount(1);
+            data.InvalidateConditionsRecursive();
+
+            NifItem keys = model.FindItem(data, @"Translations\Keys")!;
+            model.UpdateArraySize(keys);
+
+            for (int i = 0; i < 2; i++)
+            {
+                model.FindItem(keys.Children[i], "Time")!.Value.SetFloat(i);
+                model.FindItem(keys.Children[i], "Value")!.Value.Set(new NifVector3(i * 10f, 0f, 0f));
+            }
+
+            NifItem interpolator = model.InsertBlock("NiTransformInterpolator");
+            model.SetRef(interpolator, "Data", data);
+
+            NifItem controller = model.InsertBlock("NiTransformController");
+            model.SetRef(controller, "Interpolator", interpolator);
+            model.SetRef(controller, "Target", root);
+
+            model.SetRef(root, "Controller", controller);
+            model.SetRoots([root]);
+            model.UpdateHeader();
+
+            return model;
+        }
+
+        [Fact]
+        public void ANodeThatMovesOnItsOwnKeepsMoving()
+        {
+            // A NiTransformController attached to a node and named by no sequence moves
+            // the node itself. The export gathers controllers by what their
+            // interpolator drives, and this one drives the node rather than a property
+            // of it, so it fell through both paths and was dropped -- the largest
+            // single cause of divergence across the game's meshes.
+            NifModel source = BuildMovingNode();
+
+            NifModel rebuilt = RoundTrip(source);
+
+            foreach (string type in new[]
+                     { "NiTransformController", "NiTransformInterpolator", "NiTransformData" })
+            {
+                Assert.Equal(
+                    source.Blocks.Count(b => b.Name == type),
+                    rebuilt.Blocks.Count(b => b.Name == type));
+            }
+
+            // And the keys came with it, rather than an empty controller.
+            NifItem after = rebuilt.Blocks.First(b => b.Name == "NiTransformData");
+
+            Assert.Equal(2u, rebuilt.GetUInt(after, @"Translations\Num Keys"));
+
+            NifItem last = rebuilt.FindItem(after, @"Translations\Keys")!.Children[1];
+
+            Assert.Equal(10f, last.Children.First(c => c.Name == "Value").Value.Get<NifVector3>().X, 2);
+        }
+
                 [Fact]
         public void StandaloneControllersComeBackStandalone()
         {
