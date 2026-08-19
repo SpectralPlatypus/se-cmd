@@ -1306,6 +1306,16 @@ namespace SECmd.Conversion
             if (material is null)
                 return;
 
+            // The material says which shader it came from; only an effect shader
+            // records it, since a lighting shader is what everything else rebuilds as.
+            if (FbxEffectShader.WasWritten(material))
+            {
+                _model.SetRef(shape, "Shader Property", FbxEffectShader.Read(material, _model));
+
+                BuildAlphaProperty(shape, material.Properties);
+                return;
+            }
+
             NifItem shader = _model.InsertBlock("BSLightingShaderProperty");
             FbxProperties properties = material.Properties;
 

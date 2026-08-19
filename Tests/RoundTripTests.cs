@@ -191,6 +191,34 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void EffectShadersSurviveWithTheirOwnFields()
+        {
+            // ck-cmd's FBX path drops these: its export casts the shader to
+            // BSLightingShaderProperty and takes the null when that fails, and its
+            // import only ever builds a lighting shader. Following it would lose every
+            // glow, decal and magic effect in a file.
+            NifModel source = Load("nifly/TestNifFile_OrderedNode_SE.nif");
+
+            int shaders = source.Blocks.Count(b => b.Name == "BSEffectShaderProperty");
+
+            Assert.NotEqual(0, shaders);
+
+            NifModel rebuilt = RoundTrip(source);
+
+            Assert.Equal(shaders, rebuilt.Blocks.Count(b => b.Name == "BSEffectShaderProperty"));
+
+            // An effect shader shares almost no fields with a lighting one, so the
+            // check is on its own: its texture, its flags and its colour.
+            NifItem before = source.Blocks.First(b => b.Name == "BSEffectShaderProperty");
+            NifItem after = rebuilt.Blocks.First(b => b.Name == "BSEffectShaderProperty");
+
+            foreach (string field in new[] { "Shader Flags 1", "Shader Flags 2", "Falloff Start Angle" })
+                Assert.Equal(source.FindItem(before, field)!.Value.ToString(), rebuilt.FindItem(after, field)!.Value.ToString());
+
+            Assert.Equal(source.GetString(before, "Source Texture"), rebuilt.GetString(after, "Source Texture"));
+        }
+
+                [Fact]
         public void BonesNamedLikeSkyrimsResolve()
         {
             // FBX names cannot hold a space or a bracket, so "NPC R Thigh [RThg]" goes

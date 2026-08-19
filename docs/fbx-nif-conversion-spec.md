@@ -193,6 +193,25 @@ FBX wrap modes, and `Alpha` from the shader.
 On import, texture paths are rewritten by `format_texture` (L3123): truncate to start
 at `textures` (or `cube`), convert `/` to `\`, force a `.dds` extension.
 
+#### 4.3.1 Effect shaders are not handled by the reference
+
+`FBXWrangler.cpp` contains no occurrence of `EffectShader` in any casing. Both
+directions assume a lighting shader:
+
+- **Export** (L732, L738): `create_material(..., DynamicCast<BSLightingShaderProperty>(shape.GetShaderProperty()), ...)`.
+  A `BSEffectShaderProperty` fails that cast and yields NULL, so the shape leaves with
+  no material at all.
+- **Import** (L3442): `BSLightingShaderProperty* shader = new BSLightingShaderProperty();`,
+  unconditionally.
+
+ck-cmd does handle effect shaders elsewhere — `ConvertNif.cpp` builds them when
+converting Oblivion and Fallout 3 material properties to Skyrim, and `geometry.cpp`
+reads their external emittance for `BSXFlags` bit 9 — so this is a gap in the FBX path
+rather than in the tool. It is listed in §9.
+
+This port departs here, because following it would silently drop every glow, decal,
+blood splatter and magic effect in a file. See §5.3.2.
+
 ### 4.4 Alpha properties
 
 `AlphaFlagsHandler` (L432–546) round-trips `NiAlphaProperty` through user-defined
@@ -457,6 +476,22 @@ Two ordering constraints fall out of this:
 Weights are renormalised over the four that are kept, since a vertex may arrive with
 more influences than the format holds and one summing to less than 1 is dragged towards
 the origin.
+
+#### 5.3.2 Effect shaders
+
+The two shader classes share almost no fields: an effect shader has its own source and
+greyscale textures rather than a `BSShaderTextureSet`, and a base colour rather than a
+specular model. Rather than forcing them through the common material form, the block's
+own fields ride across flat on the FBX material, as constraints and particle systems do
+— `NifFieldCodec` with an `es_` prefix, alongside a `shader_block` property naming the
+class.
+
+Only an effect shader records `shader_block`; a lighting shader is what everything else
+rebuilds as, which keeps a scene authored in a DCC tool working unchanged.
+
+The controller chain and extra data are not carried. An animated shader is animated
+through the sequences, which travel by their own route, and a carried link would point
+into a block list that no longer has that block.
 
 #### 5.3.1 Tangent space
 
@@ -807,6 +842,7 @@ Reproduced only where behaviour depends on them; otherwise fixed and noted.
 | L1984 | `setPropertyAnimationOnDefaultStack` calls `span.SetStart` where `SetStop` is meant |
 | L753, L760 | `vector<Triangle>& tris = vector<Triangle>(0)` binds a reference to a temporary |
 | §3 | `unsanitizeString` is not injective; a literal `_s_` in a name is corrupted |
+| §4.3.1 | The FBX path handles no `BSEffectShaderProperty`. Export casts the shader to `BSLightingShaderProperty` and takes the null, so the shape leaves with no material; import only ever builds a lighting shader. Handled elsewhere in ck-cmd, so this is a gap in the FBX path. Fixed here — see §5.3.2 |
 
 ---
 
@@ -820,6 +856,7 @@ Reproduced only where behaviour depends on them; otherwise fixed and noted.
 | Havok | No SDK link. MOPP generation goes through `NifMopp.dll` as NifSkope does; shape tessellation and convex hulls are implemented directly. See §8. |
 | Reference defects | Fixed unless behaviour depends on them, and listed in §9. |
 | Havok material | Carried as ck-cmd carries it (§4.8): an FBX material on the collision mesh named after the enum, with the layer as a `CollisionLayer` property. The names come from nif.xml's own `SkyrimHavokMaterial` and `SkyrimLayer` rather than the table ck-cmd hand-wrote, so the two spellings cannot drift. |
+| Effect shaders | Carried in both directions (§4.3.1, §5.3.2). The reference drops them: its export casts to `BSLightingShaderProperty` and takes the null, its import only builds lighting shaders. |
 | Tangent space | Generated from NifSkope's `spTangentSpace` (§5.3.1) rather than obtained from the FBX SDK, which also removes the need for ck-cmd's tangent/binormal swap. |
 | Inertia tensors | Computed directly (§5.7.2) rather than obtained from Havok, and held to the numbers ck-cmd's generated files carry. |
 | Node kinds | The NIF block type of every node, and of the root, travels in a `nif_block_type` property. FBX has one kind of node; NIF has a dozen that differ in what the engine does with them. The root matters most: `BSXFlags` asks twice whether it is exactly `NiNode` (see `bsxflags-spec.md` §3.2, §3.4), so flattening it changes what the file claims about itself. |

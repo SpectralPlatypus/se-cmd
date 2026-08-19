@@ -652,6 +652,15 @@ namespace SECmd.Conversion
             {
                 FbxObject fbxMaterial = FbxMaterialWriter.AddMaterial(scene, material, _options.TexturePath);
 
+                // An effect shader shares almost no fields with a lighting one, so its
+                // own ride across flat on the same material rather than being forced
+                // through the common form.
+                if (_model.GetRef(shape, "Shader Property") is { } shader
+                    && FbxEffectShader.Is(_model, shader))
+                {
+                    FbxEffectShader.Write(fbxMaterial, _model, shader);
+                }
+
                 // A material belongs to the node carrying the mesh, not the mesh,
                 // and the geometry's material element points at index 0.
                 scene.Connect(fbxMaterial, holder);
@@ -710,7 +719,18 @@ namespace SECmd.Conversion
         {
             NifItem? shader = _model.GetRef(shape, "Shader Property");
 
-            if (shader is null || !_model.BlockInherits(shader, "BSLightingShaderProperty"))
+            if (shader is null)
+                return null;
+
+            // An effect shader has none of the fields read below -- no specular model,
+            // no texture set -- so it gets a bare material to hang its own fields on
+            // rather than being read as a lighting shader that happens to be empty.
+            // ck-cmd returns null here instead, which loses the shape's material
+            // entirely: see `docs/fbx-nif-conversion-spec.md` §4.3.
+            if (FbxEffectShader.Is(_model, shader))
+                return new MaterialData { Name = name };
+
+            if (!_model.BlockInherits(shader, "BSLightingShaderProperty"))
                 return null;
 
             var material = new MaterialData
