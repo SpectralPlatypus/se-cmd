@@ -224,6 +224,25 @@ namespace SECmd.Conversion
         /// <summary>The texture set, by slot. Empty entries mean an unused slot.</summary>
         public List<string> Textures { get; } = [];
 
+        /// <summary>
+        /// Which blocks in the source file this material's parts came from.
+        /// </summary>
+        /// <remarks>
+        /// Sharing is data, not a coincidence of equality. Bethesda's files point
+        /// several shapes at one texture set or one alpha property, and also carry
+        /// identical blocks side by side where the exporter happened to make two — so
+        /// rebuilding by content merges blocks that were meant to be separate, and
+        /// rebuilding one per shape splits blocks that were meant to be one.
+        ///
+        /// Carrying the source index settles it: same index, same block. The numbers
+        /// mean nothing outside the file they came from, which is the only place they
+        /// are read.
+        /// </remarks>
+        public int TextureSetId { get; set; } = -1;
+
+        /// <inheritdoc cref="TextureSetId"/>
+        public int AlphaId { get; set; } = -1;
+
         /// <summary>Alpha settings, when the shape carried a <c>NiAlphaProperty</c>.</summary>
         public AlphaSettings? AlphaProperty { get; set; }
 

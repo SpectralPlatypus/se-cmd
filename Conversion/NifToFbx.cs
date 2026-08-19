@@ -751,6 +751,8 @@ namespace SECmd.Conversion
             // shader's, and it drives the transparency connection on the texture.
             if (_model.GetRef(shape, "Alpha Property") is { } alpha)
             {
+                material.AlphaId = _model.IndexOf(alpha);
+
                 material.AlphaProperty = AlphaSettings.FromFlags(
                     (ushort)_model.GetUInt(alpha, "Flags"),
                     (byte)_model.GetUInt(alpha, "Threshold"));
@@ -815,12 +817,16 @@ namespace SECmd.Conversion
             if (_model.GetRef(shader, "Texture Set") is { } textureSet
                 && _model.FindItem(textureSet, "Textures") is { } textures)
             {
+                material.TextureSetId = _model.IndexOf(textureSet);
+
                 foreach (NifItem texture in textures.Children)
                     material.Textures.Add(texture.Value.AsString());
             }
 
             if (_model.GetRef(shape, "Alpha Property") is { } alphaProperty)
             {
+                material.AlphaId = _model.IndexOf(alphaProperty);
+
                 material.AlphaProperty = AlphaSettings.FromFlags(
                     (ushort)_model.GetUInt(alphaProperty, "Flags"),
                     (byte)_model.GetUInt(alphaProperty, "Threshold"));

@@ -191,6 +191,42 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void SharedPropertyBlocksAreSharedAgain()
+        {
+            // Eight shapes pointing at two alpha properties came back with eight, and
+            // two texture sets came back as twenty-seven. Sharing is data: it says the
+            // shapes are the same material, not merely alike.
+            NifModel source = Load("nifly/TestNifFile_OrderedNode_SE.nif");
+
+            int alphas = source.Blocks.Count(b => b.Name == "NiAlphaProperty");
+            int sets = source.Blocks.Count(b => b.Name == "BSShaderTextureSet");
+
+            Assert.NotEqual(0, alphas);
+
+            NifModel rebuilt = RoundTrip(source);
+
+            Assert.Equal(alphas, rebuilt.Blocks.Count(b => b.Name == "NiAlphaProperty"));
+            Assert.Equal(sets, rebuilt.Blocks.Count(b => b.Name == "BSShaderTextureSet"));
+        }
+
+        [Fact]
+        public void IdenticalBlocksKeptApartStayApart()
+        {
+            // The other half, and the reason sharing cannot be decided by comparing
+            // content: this file carries three texture sets that are identical and
+            // separate. Merging equal blocks would be as wrong as never merging.
+            NifModel source = Load("multi_material_cube.nif");
+
+            var sets = source.Blocks.Where(b => b.Name == "BSShaderTextureSet").ToList();
+
+            Assert.True(sets.Count > 1, "the fixture is supposed to have several");
+
+            NifModel rebuilt = RoundTrip(source);
+
+            Assert.Equal(sets.Count, rebuilt.Blocks.Count(b => b.Name == "BSShaderTextureSet"));
+        }
+
+                [Fact]
         public void StandaloneControllersComeBackStandalone()
         {
             // A controller no sequence names is attached to what it controls and runs

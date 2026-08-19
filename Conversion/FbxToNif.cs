@@ -1398,10 +1398,19 @@ namespace SECmd.Conversion
             }
         }
 
+        /// <summary>Alpha properties built so far, by the source block they came from.</summary>
+        /// <remarks>
+        /// Keyed on identity rather than on content. Bethesda's files point several
+        /// shapes at one block and also carry identical blocks side by side, so
+        /// merging by equality is as wrong as never merging at all.
+        /// </remarks>
+        private readonly Dictionary<string, NifItem> _alphaProperties = new(StringComparer.Ordinal);
+
+        /// <summary>Texture sets built so far, by the source block they came from.</summary>
+        private readonly Dictionary<string, NifItem> _textureSets = new(StringComparer.Ordinal);
+
         private NifItem BuildTextureSet(FbxObject material)
         {
-            NifItem set = _model.InsertBlock("BSShaderTextureSet");
-
             // Skyrim always writes nine slots, whether or not they are used.
             const int SlotCount = 9;
             var paths = new string[SlotCount];
@@ -1427,11 +1436,24 @@ namespace SECmd.Conversion
                 paths[slot] = MaterialData.NormalizeTexturePath(path);
             }
 
+            // Shapes that shared a set in the source share one here. Keyed on which
+            // block it was rather than on the paths, since a file can hold two
+            // identical sets on purpose -- rebuilding by content would merge those.
+            string key = material.Properties.GetString(FbxMaterialWriter.TextureSetIdProperty);
+
+            if (key.Length > 0 && _textureSets.TryGetValue(key, out NifItem? shared))
+                return shared;
+
+            NifItem set = _model.InsertBlock("BSShaderTextureSet");
+
             if (_model.SetArraySize(set, "Num Textures", "Textures", SlotCount) is { } textures)
             {
                 for (int i = 0; i < SlotCount && i < textures.Children.Count; i++)
                     textures.Children[i].Value.Set(paths[i] ?? string.Empty);
             }
+
+            if (key.Length > 0)
+                _textureSets[key] = set;
 
             return set;
         }
@@ -1461,9 +1483,19 @@ namespace SECmd.Conversion
             if (alpha.ToFlags() == 0)
                 return;
 
-            NifItem block = _model.InsertBlock("NiAlphaProperty");
-            SetCount(block, "Flags", alpha.ToFlags());
-            SetCount(block, "Threshold", alpha.Threshold);
+            // Shapes that shared a block in the source share one here. Eight shapes
+            // pointing at two alpha properties came back with eight.
+            string key = properties.GetString(FbxMaterialWriter.AlphaIdProperty);
+
+            if (key.Length == 0 || !_alphaProperties.TryGetValue(key, out NifItem? block))
+            {
+                block = _model.InsertBlock("NiAlphaProperty");
+                SetCount(block, "Flags", alpha.ToFlags());
+                SetCount(block, "Threshold", alpha.Threshold);
+
+                if (key.Length > 0)
+                    _alphaProperties[key] = block;
+            }
 
             _model.SetRef(shape, "Alpha Property", block);
         }

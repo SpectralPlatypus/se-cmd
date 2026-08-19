@@ -450,6 +450,25 @@ Two exporter workarounds:
 
 Alpha presence is detected from any colour with alpha < 1.
 
+#### 5.2.1 Shared property blocks
+
+Bethesda's files point several shapes at one `BSShaderTextureSet` or one
+`NiAlphaProperty`, and *also* carry identical blocks side by side where the exporter
+happened to make two. Both matter, and they rule out the two obvious approaches:
+
+- Rebuilding one block per shape splits blocks that were one. Eight shapes sharing two
+  alpha properties came back with eight, and two texture sets came back as twenty-seven.
+- Merging blocks by content joins blocks that were separate. `multi_material_cube.nif`
+  holds three texture sets that are identical and deliberately distinct.
+
+Sharing is data, so it is carried like any other: the export records which source block
+each part came from, as `nif_texture_set` and `nif_alpha_property` on the FBX material,
+and the import shares by that. Same index, same block; different index, different block,
+however alike they look.
+
+The indices mean nothing outside the file they came from, which is the only place they
+are read.
+
 #### 5.3.0 Skinned SE vertex data
 
 `BSTriShape` packs everything about a vertex inline, and for a skinned shape that
