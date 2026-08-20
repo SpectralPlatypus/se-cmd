@@ -103,6 +103,30 @@ namespace SECmd.Fbx
         /// scene from elsewhere — or one whose property has been edited into something
         /// else — cannot turn a node into a shape or a controller.
         /// </remarks>
+        /// <summary>
+        /// Marks a node that stands for a shape with no vertices.
+        /// </summary>
+        /// <remarks>
+        /// A shape with nothing in it is still a block. nif.xml says so outright about
+        /// the commonest kind: a <c>BSProceduralLightningController</c> is "paired with
+        /// dummy TriShapes", empty shapes the engine generates lightning into at
+        /// runtime, and the game's staff bolts and rune projectiles are built from
+        /// them. Exporting nothing lost the shape, its shader and its alpha property.
+        ///
+        /// FBX has no mesh with no vertices worth writing — a DCC tool given one shows
+        /// an object that cannot be selected — so it travels as a plain node, and this
+        /// is what says the node was a shape rather than a node.
+        ///
+        /// Marked explicitly rather than inferred from "a geometry class with no mesh
+        /// attached", because that is also what an author typing a class name onto an
+        /// ordinary node produces, and those are not the same thing.
+        /// </remarks>
+        public const string EmptyShapeProperty = "nif_empty_shape";
+
+        /// <summary>Whether a node stands for a shape with no vertices.</summary>
+        public static bool IsEmptyShape(FbxObject node) =>
+            node.Properties.GetString(EmptyShapeProperty).Length > 0;
+
         /// <summary>The property holding a block's real name, when FBX cannot.</summary>
         /// <remarks>
         /// Almost every node's name survives as the FBX object's own, through

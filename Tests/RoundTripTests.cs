@@ -1037,6 +1037,51 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void AShapeWithNoVerticesIsStillAShape()
+        {
+            // nif.xml says it outright: a BSProceduralLightningController is "paired
+            // with dummy TriShapes", empty shapes the engine generates lightning into
+            // at runtime. The game's staff bolts and rune projectiles are built from
+            // them, and exporting nothing lost the shape, its shader and its alpha
+            // property -- half the blocks in those files.
+            NifModel source = Load("multi_material_cube.nif");
+
+            NifItem root = source.GetBlock(source.FindItem(source.Footer, "Roots")!.Children[0])!;
+
+            NifItem dummy = source.InsertBlock("BSTriShape");
+            source.SetString(dummy, "Name", "object0");
+
+            NifItem shader = source.InsertBlock("BSEffectShaderProperty");
+            source.SetString(shader, "Source Texture", @"textures\effects\bolt.dds");
+            source.SetRef(dummy, "Shader Property", shader);
+
+            var children = source.GetRefArray(root, "Children").ToList();
+            children.Add(dummy);
+
+            if (source.SetArraySize(root, "Num Children", "Children", children.Count) is { } array)
+            {
+                for (int i = 0; i < children.Count; i++)
+                    array.Children[i].Value.SetLink(source.IndexOf(children[i]));
+            }
+
+            NifModel rebuilt = RoundTrip(source);
+
+            // The fixture is an LE file, so the shape comes back as the class that
+            // edition has -- what matters is that it comes back at all.
+            NifItem after = Assert.Single(rebuilt.Blocks, b => rebuilt.GetName(b) == "object0");
+
+            Assert.True(rebuilt.Database.Inherits(after.Name, "NiTriBasedGeom"));
+
+            // Still empty: a data block with nothing in it, not a mesh invented for it.
+            Assert.Equal(0u, rebuilt.GetUInt(rebuilt.GetRef(after, "Data")!, "Num Vertices"));
+
+            NifItem back = rebuilt.GetRef(after, "Shader Property")!;
+
+            Assert.Equal("BSEffectShaderProperty", back.Name);
+            Assert.Equal(@"textures\effects\bolt.dds", rebuilt.GetString(back, "Source Texture"));
+        }
+
+        [Fact]
         public void ANodeThatClaimsToBeGeometryIsStillANode()
         {
             // Geometry is built on the mesh path, from a mesh. A node that names a

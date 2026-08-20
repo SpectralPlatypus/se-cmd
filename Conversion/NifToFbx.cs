@@ -800,6 +800,50 @@ namespace SECmd.Conversion
             return points;
         }
 
+        /// <summary>
+        /// Exports a shape with no vertices as a node standing for it.
+        /// </summary>
+        /// <remarks>
+        /// Everything a shape carries except the mesh: the class, its own fields, the
+        /// shader and alpha property, the extra data. FBX has no mesh worth writing
+        /// for a shape with nothing in it, and a DCC tool given one shows an object
+        /// that cannot be selected, so it is a plain node with a mark saying what it
+        /// was (§5.2.4).
+        /// </remarks>
+        private void ConvertEmptyShape(FbxScene scene, NifItem shape, FbxObject? parent)
+        {
+            string name = NameEncoding.Sanitize(_model.GetName(shape));
+
+            if (name.Length == 0)
+                name = shape.Name;
+
+            FbxObject node = FbxMeshWriter.AddModel(scene, name, "Null", _model.GetTransform(shape));
+
+            if (parent is null)
+                scene.ConnectToRoot(node);
+            else
+                scene.Connect(node, parent);
+
+            node.Properties.SetUserString(FbxNodeType.EmptyShapeProperty, "1");
+
+            FbxNodeType.WriteWithFields(
+                node, _model, shape,
+                _model.BlockInherits(shape, "BSTriShape") ? "BSTriShape" : "NiTriBasedGeom",
+                LodFields);
+
+            FbxNodeType.WriteName(node, _model, shape);
+            FbxDynamicShape.Write(node, _model, shape);
+            FbxLodSizes.Write(node, _model, shape);
+            FbxExtraDataWriter.AddExtraData(node, _model, shape);
+
+            // The shader and alpha property are what the effect looks like, and the
+            // shape having no vertices of its own does not make them any less its.
+            AddMaterialTo(scene, shape, node, name, geometry: null);
+
+            _built[shape] = node;
+            Remember(shape, node);
+        }
+
         private void ConvertGeometry(FbxScene scene, NifItem shape, FbxObject? parent)
         {
             MeshGeometry? mesh;
@@ -812,24 +856,16 @@ namespace SECmd.Conversion
             {
                 NifItem? data = _model.GetRef(shape, "Data");
 
-                if (data is null)
-                {
-                    Warnings.Add($"{_model.GetName(shape)} has no geometry data");
-                    return;
-                }
-
-                mesh = ReadGeometry(shape, data);
+                mesh = data is null ? null : ReadGeometry(shape, data);
             }
 
-            if (mesh is null)
+            // A shape with nothing to draw is still a block, and the game builds real
+            // effects out of them -- a lightning controller generates its geometry into
+            // one at runtime. It travels as a node marked as what it is, rather than
+            // not travelling.
+            if (mesh is null || mesh.IsEmpty)
             {
-                Warnings.Add($"{_model.GetName(shape)} has no readable geometry");
-                return;
-            }
-
-            if (mesh.IsEmpty)
-            {
-                Warnings.Add($"{_model.GetName(shape)} has no vertices");
+                ConvertEmptyShape(scene, shape, parent);
                 return;
             }
 

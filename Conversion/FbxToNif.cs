@@ -301,6 +301,14 @@ namespace SECmd.Conversion
             if (FbxParticleWriter.IsModifierNode(model))
                 return;
 
+            // A node standing for a shape with no vertices is that shape, not a node
+            // that happens to sit where one was.
+            if (FbxNodeType.IsEmptyShape(model))
+            {
+                into.Add(BuildEmptyShape(model, name, transform));
+                return;
+            }
+
             // A node carrying a particle system becomes the system rather than a
             // NiNode: it is the same node, and emitting both would leave the system
             // parented under a copy of itself.
@@ -1373,6 +1381,53 @@ namespace SECmd.Conversion
             }
 
             _pendingSkins.Clear();
+        }
+
+        /// <summary>
+        /// Rebuilds a shape that has no vertices, from the node standing for it.
+        /// </summary>
+        /// <remarks>
+        /// The counterpart of the export's own empty-shape path (§5.2.4). Everything a
+        /// shape carries except the mesh, since there is no mesh: a dummy TriShape is
+        /// where a lightning controller puts the geometry it generates, and the file
+        /// holds the shape, its shader and its alpha property with nothing in between.
+        ///
+        /// A NiTriBasedGeom still needs its data block — the class keeps its vertices
+        /// there and a null Data is not a shape the engine will load — so an empty one
+        /// is built. A BSTriShape packs its vertices inline and needs nothing.
+        /// </remarks>
+        private NifItem BuildEmptyShape(FbxObject model, string name, NifTransform transform)
+        {
+            string carried = FbxNodeType.Read(model, _model, string.Empty, "NiAVObject");
+
+            string type = carried.Length > 0
+                          && (_model.Database.Inherits(carried, "NiTriBasedGeom")
+                              || _model.Database.Inherits(carried, "BSTriShape"))
+                ? carried
+                : "BSTriShape";
+
+            if (_options.LegendaryEdition && _model.Database.Inherits(type, "BSTriShape"))
+                type = "NiTriShape";
+
+            NifItem shape = _model.InsertBlock(type);
+
+            _model.SetString(shape, "Name", FbxNodeType.ReadName(model, name));
+            _model.SetTransform(shape, transform);
+            _nodesByName.TryAdd(name, shape);
+
+            FbxNodeType.ReadFields(
+                model, _model, shape,
+                _model.BlockInherits(shape, "BSTriShape") ? "BSTriShape" : "NiTriBasedGeom");
+
+            FbxLodSizes.Read(model, _model, shape);
+            FbxDynamicShape.Read(model, _model, shape, []);
+            FbxExtraDataWriter.ReadExtraData(model, _model, shape, Warnings);
+            BuildMaterial(shape, model);
+
+            if (!_model.BlockInherits(shape, "BSTriShape"))
+                _model.SetRef(shape, "Data", _model.InsertBlock("NiTriShapeData"));
+
+            return shape;
         }
 
         /// <summary>
