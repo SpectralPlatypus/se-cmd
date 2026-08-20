@@ -973,6 +973,37 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void AShaderThatIsNotALightingShaderRidesUnderItsOwnName()
+        {
+            // The flat carrier was written for BSEffectShaderProperty, but nothing
+            // about it is particular to one class. A BSWaterShaderProperty shares no
+            // more with a lighting shader than an effect shader does, and was being
+            // dropped outright -- the shape came back with no shader at all.
+            // A real mesh, so the shape survives on its own merits and the test is
+            // about the shader.
+            NifModel model = Load("multi_material_cube.nif");
+
+            NifItem shape = model.Blocks.First(b => b.Name == "NiTriShape");
+
+            NifItem shader = model.InsertBlock("BSWaterShaderProperty");
+            model.SetString(shader, "Name", "water");
+            model.FindItem(shader, "Shader Flags 1")?.Value.SetCount(0x80000000);
+
+            model.SetRef(shape, "Shader Property", shader);
+
+            NifModel rebuilt = RoundTrip(model);
+
+            NifItem after = Assert.Single(rebuilt.Blocks, b => b.Name == "BSWaterShaderProperty");
+
+            Assert.Equal(0x80000000u, rebuilt.GetUInt(after, "Shader Flags 1"));
+
+            // Hung on a shape, not merely present.
+            Assert.Contains(
+                rebuilt.Blocks.Where(b => b.Name == "NiTriShape"),
+                b => rebuilt.GetRef(b, "Shader Property") == after);
+        }
+
+        [Fact]
         public void ANodeThatClaimsToBeGeometryIsStillANode()
         {
             // Geometry is built on the mesh path, from a mesh. A node that names a

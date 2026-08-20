@@ -3,7 +3,7 @@ using SECmd.Nif;
 namespace SECmd.Fbx
 {
     /// <summary>
-    /// Carries a <c>BSEffectShaderProperty</c> through FBX.
+    /// Carries a shader that is not a lighting shader through FBX.
     /// </summary>
     /// <remarks>
     /// ck-cmd's FBX path does not handle these at all. Its export casts a shape's
@@ -19,13 +19,23 @@ namespace SECmd.Fbx
     /// a texture set, and a base colour rather than a specular model — so rather than
     /// forcing them through the common material form, the block's own fields ride
     /// across flat, as constraints and particle systems do.
+    ///
+    /// An effect shader was the first of these and is by far the commonest, but it is
+    /// not the only one: <c>BSWaterShaderProperty</c> shares no more with a lighting
+    /// shader than it does, and was being lost outright for the same reason. So the
+    /// rule is the class the common form covers, not a list of the ones it does not —
+    /// anything that is not a <c>BSLightingShaderProperty</c> rides here, under its own
+    /// name.
     /// </remarks>
     public static class FbxEffectShader
     {
         /// <summary>The property naming which shader block a material stands for.</summary>
         public const string BlockProperty = "shader_block";
 
-        /// <summary>The block this carries.</summary>
+        /// <summary>The one shader class the common material form covers.</summary>
+        public const string LightingShader = "BSLightingShaderProperty";
+
+        /// <summary>The commonest block this carries, and the one tests name.</summary>
         public const string BlockName = "BSEffectShaderProperty";
 
         /// <summary>Prefix on the shader's own fields.</summary>
@@ -46,12 +56,12 @@ namespace SECmd.Fbx
 
         /// <summary>Whether a shape's shader is one of these.</summary>
         public static bool Is(NifModel model, NifItem shader) =>
-            model.BlockInherits(shader, BlockName);
+            !model.BlockInherits(shader, LightingShader);
 
         /// <summary>Writes the shader's fields onto the material standing for it.</summary>
         public static void Write(FbxObject material, NifModel model, NifItem shader)
         {
-            material.Properties.SetUserString(BlockProperty, BlockName);
+            material.Properties.SetUserString(BlockProperty, shader.Name);
 
             NifFieldCodec.Write(
                 model, shader, Prefix,
@@ -61,12 +71,24 @@ namespace SECmd.Fbx
 
         /// <summary>Whether a material carries one of these rather than a lighting shader.</summary>
         public static bool WasWritten(FbxObject material) =>
-            material.Properties.GetString(BlockProperty) == BlockName;
+            material.Properties.GetString(BlockProperty).Length > 0;
 
-        /// <summary>Rebuilds the shader from a material that carries one.</summary>
+        /// <summary>
+        /// Rebuilds the shader from a material that carries one.
+        /// </summary>
+        /// <remarks>
+        /// The class is whatever was written, checked against the schema: a name this
+        /// build does not know, or one that is not a shader at all, falls back to the
+        /// effect shader rather than inserting whatever the property said.
+        /// </remarks>
         public static NifItem Read(FbxObject material, NifModel model)
         {
-            NifItem shader = model.InsertBlock(BlockName);
+            string type = material.Properties.GetString(BlockProperty);
+
+            if (!model.KnowsBlock(type) || !model.Database.Inherits(type, "BSShaderProperty"))
+                type = BlockName;
+
+            NifItem shader = model.InsertBlock(type);
 
             NifFieldCodec.Read(
                 model, shader, Prefix,

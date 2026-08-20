@@ -991,9 +991,6 @@ namespace SECmd.Conversion
             if (FbxEffectShader.Is(_model, shader))
                 return ReadEffectMaterial(shape, shader, name);
 
-            if (!_model.BlockInherits(shader, "BSLightingShaderProperty"))
-                return null;
-
             var material = new MaterialData
             {
                 Name = name,
