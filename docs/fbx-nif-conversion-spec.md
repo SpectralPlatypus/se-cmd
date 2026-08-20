@@ -1300,6 +1300,101 @@ satisfies it only by chance. Recorded in §9.
 
 ---
 
+## 5C. Everything Bethesda's classes carry, and where it goes
+
+FBX has a node, a mesh, a material, a skin and an animation curve. A Skyrim NIF has a
+hundred classes that differ in what the engine *does* with them, and almost none of that
+has an FBX equivalent. What follows is the whole of what is carried across, in one
+place, because the alternative is finding it a class at a time.
+
+Everything here is a user-defined property (`U` or `A+U` flags) unless the row says
+otherwise. That matters: standard properties are the ones a DCC tool understands and
+edits, and user-defined ones survive a round trip through it without being interpreted.
+
+### 5C.1 The rule these follow
+
+A property carries something **only when the scene cannot say it any other way**, and
+never when the thing can be derived from what is already there. So the mesh carries no
+copy of its own vertices, the tangent space is regenerated rather than carried (§5.3.1),
+and `BSXFlags` is recalculated rather than carried (`bsxflags-spec.md`).
+
+Where a value is both meaningful to an artist *and* needed exactly, it is written twice:
+once in FBX's own vocabulary so the scene looks right, and once as a property so the
+rebuild is exact. The collision material (§4.8), the effect shader (§5.3.2) and the
+multi-bound volume (§5.2.2) all do this. **The property is always the authoritative
+half**; the visible half is never read back.
+
+### 5C.2 Nodes
+
+| Property | On | Carries |
+| --- | --- | --- |
+| `nif_block_type` | node, geometry | The block class — `BSOrderedNode`, `BSLeafAnimNode`, `BSValueNode`, `BSMultiBoundNode`, `BSLODTriShape`, `BSDynamicTriShape`. Refused unless the schema knows it and it inherits the expected base |
+| `extra_data`, `xd_<i>_type`, `xd_<i>_name`, `xd_<i>_*` | node | Every `NiExtraData` block, field by field. `BSXFlags` is excluded: it is recalculated (§5.4.1) |
+| `multi_bound_type`, `mb_*`, `multi_bound_culling` | node | A `BSMultiBoundNode`'s culling volume, three blocks deep, plus a `<name>_multibound` mesh drawn for the artist (§5.2.2) |
+| `lod_size_0..2` | geometry | A `BSLODTriShape`'s per-level triangle counts. Without them the shape draws nothing at any distance (§5.2.4) |
+| `dynamic_vertex_w` | geometry | The fourth component of a `BSDynamicTriShape`'s vertex buffer, one per vertex. The other three are the mesh (§5.3.3) |
+
+### 5C.3 Collision
+
+| Property | On | Carries |
+| --- | --- | --- |
+| `nif_collision_type` | `_rb` node | `bhkCollisionObject` or `bhkBlendCollisionObject`. The blend form is what makes a file a skeleton (§5.7.0) |
+| `nif_body_type` | `_rb` node | `bhkRigidBody` or `bhkRigidBodyT`; the latter applies its own transform |
+| `nif_collision_flags` | `_rb` node | `bhkCOFlags` — `SET_LOCAL`, `SYNC_ON_UPDATE`, how the body tracks its node |
+| `nif_blend_heir_gain`, `nif_blend_vel_gain` | `_rb` node | A blend object's gains. Zero is a bone that does not follow |
+| `nif_rb_mass`, `nif_rb_layer` | `_rb` node | The body's mass and collision layer. The layer decides the motion profile; a static's mass is dropped (§5.7.2) |
+| *the FBX material's **name*** | collision mesh | The Havok material, as its `SkyrimHavokMaterial` enum name, with the layer on a `CollisionLayer` property. ck-cmd's scheme, kept (§4.8) |
+| *the node's **name suffix*** | shape node | Which primitive: `_box`, `_sphere`, `_capsule`, `_convex`, `_mesh`, and the containers `_list`, `_convex_list`, `_transform`, `_mopp`. Size is refitted from the geometry, not carried |
+
+### 5C.4 Shaders and materials
+
+| Property | On | Carries |
+| --- | --- | --- |
+| `shader_block`, `es_*` | material | A `BSEffectShaderProperty`, field by field. Only an effect shader records the class; a lighting shader is what everything else rebuilds as (§5.3.2) |
+| `shader_type` | material | The lighting shader's `Shader Type`, by enum name |
+| `nif_texture_set`, `nif_alpha_property` | material | Which *source blocks* these came from, so blocks shared there are shared again rather than copied per shape (§5.2.1) |
+| `source_blend_mode`, `destination_blend_mode`, `alpha_test_mode`, and the flags beside them | material | A `NiAlphaProperty`, spread across properties FBX has no slot for |
+| `environment_map_scale` | material | What its name says |
+
+### 5C.5 Skins
+
+| Property | On | Carries |
+| --- | --- | --- |
+| `body_slots`, `body_slot_<i>`, `body_slot_<i>_flags` | skin deformer | Which body part each partition is, **by enum name**. This is what a dismember instance has and a plain one does not (§5.2.3) |
+| `nif_skin_instance` | skin deformer | The instance class. Carried beside the slots rather than derived from them, because an empty slot list means two different things |
+
+### 5C.6 Particles
+
+A particle system has no FBX equivalent at all — no emitter, no modifier stack — and
+ck-cmd's FBX path carries none of it. See `nif-particle-spec.md`; the properties are
+`particle_system`, `particle_data`, `nps_*`, `npsd_*` on the system's node,
+`particle_modifier` and `particle_modifier_name` on each modifier node,
+`particle_collider` on each collider, `<name>_ref` for a link naming another node, and
+`particle_controllers` with `npc_<i>_*` for the controllers that animate nothing
+(§4.9A).
+
+### 5C.7 Animation
+
+Animation is the one thing FBX genuinely models, so most of it travels as curves. What
+does not fit is:
+
+| Property | On | Carries |
+| --- | --- | --- |
+| *the animated property's **name*** | node | `ControllerType\|ControllerId\|InterpolatorId\|PropertyType`, joined by bars with trailing empties dropped (§4.7.4) |
+| `interp_<node>\|<property>` | animation stack | The interpolator's exact class — a `NiBoolTimelineInterpolator` is not a `NiBoolInterpolator` |
+| `const_<node>\|<property>` | animation stack | A track holding one value for the whole take, typed so a boolean constant is not mistaken for a float one (§4.7.4) |
+| `flip_controllers`, `flip_<i>_type`, `flip_<i>_sources`, `flip_<i>_source_<n>` | node | A flipbook controller and the textures it cycles |
+| `constraint_type`, `constraint_wrapper`, `hkc_*` | attachment point | A Havok constraint; see `hkx-constraint-spec.md` |
+
+### 5C.8 What is deliberately not carried
+
+`Target` and `Next Controller` on any controller, `Name` where it is written separately,
+and every link that is the upward half of a two-way pair. All of them are rebuilt from
+the structure, and a carried one would point into a block list that no longer has that
+block.
+
+---
+
 ## 6. Traversal invariants
 
 Both directions depend on ordering that is easy to lose:
