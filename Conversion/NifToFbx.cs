@@ -220,7 +220,7 @@ namespace SECmd.Conversion
             // particle system's update switch is the familiar one; a skeleton's
             // BSLagBoneController is the same case on an ordinary node.
             if (!FbxParticleWriter.IsParticleSystem(_model, block))
-                FbxNodeControllers.Write(node, _model, block);
+                FbxNodeControllers.Write(node, _model, block, SequencedControllers);
 
             if (FbxParticleWriter.IsParticleSystem(_model, block))
             {
@@ -533,6 +533,18 @@ namespace SECmd.Conversion
             if (geometry is not null)
                 FbxMeshWriter.AddSingleMaterialElement(geometry);
         }
+
+        /// <summary>
+        /// The controllers a sequence names, which the sequence rebuilds.
+        /// </summary>
+        /// <remarks>
+        /// Worked out once. Every node asks, and walking every sequence per node is
+        /// the same answer computed as many times as the file has nodes.
+        /// </remarks>
+        private HashSet<NifItem>? _sequencedControllers;
+
+        private HashSet<NifItem> SequencedControllers =>
+            _sequencedControllers ??= NifAnimAccess.SequencedControllers(_model);
 
         /// <summary>The LOD level materials, shared by every shape that has levels.</summary>
         private readonly Dictionary<string, FbxObject> _lodMaterials = new(StringComparer.Ordinal);

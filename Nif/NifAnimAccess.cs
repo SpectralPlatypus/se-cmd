@@ -62,19 +62,7 @@ namespace SECmd.Nif
         /// </remarks>
         private static void ReadStandaloneControllers(NifModel model, List<AnimSequence> sequences)
         {
-            var claimed = new HashSet<NifItem>();
-
-            foreach (NifItem block in model.Blocks.Where(b => model.BlockInherits(b, "NiSequence")))
-            {
-                if (model.FindItem(block, "Controlled Blocks") is not { } controlled)
-                    continue;
-
-                foreach (NifItem entry in controlled.Children)
-                {
-                    if (model.GetRef(entry, "Controller") is { } c)
-                        claimed.Add(c);
-                }
-            }
+            HashSet<NifItem> claimed = SequencedControllers(model);
 
             var tracks = new Dictionary<string, AnimTrack>(StringComparer.Ordinal);
 
@@ -132,6 +120,34 @@ namespace SECmd.Nif
             (sequence.Start, sequence.Stop) = sequence.KeySpan();
 
             sequences.Add(sequence);
+        }
+
+        /// <summary>
+        /// The controllers a sequence names, which the sequence rebuilds.
+        /// </summary>
+        /// <remarks>
+        /// A controller named by a <c>NiControlledBlock</c> is one half of a pair: the
+        /// sequence holds the keys and the controller holds the blend slot they mix
+        /// into. Anything else that carried it would rebuild it a second time, so both
+        /// the animation route and the structural carrier ask this first.
+        /// </remarks>
+        public static HashSet<NifItem> SequencedControllers(NifModel model)
+        {
+            var claimed = new HashSet<NifItem>();
+
+            foreach (NifItem block in model.Blocks.Where(b => model.BlockInherits(b, "NiSequence")))
+            {
+                if (model.FindItem(block, "Controlled Blocks") is not { } controlled)
+                    continue;
+
+                foreach (NifItem entry in controlled.Children)
+                {
+                    if (model.GetRef(entry, "Controller") is { } c)
+                        claimed.Add(c);
+                }
+            }
+
+            return claimed;
         }
 
         /// <summary>

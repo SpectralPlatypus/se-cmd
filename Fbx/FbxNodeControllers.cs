@@ -42,6 +42,11 @@ namespace SECmd.Fbx
         /// it *is* the animation layer, rebuilt from the sequences — carrying it here
         /// put a manager back into a file whose animation had been turned off.
         /// </remarks>
+        /// And a controller a *sequence* names is rebuilt from that sequence, which is
+        /// the <paramref name="sequenced"/> set the caller passes in. Holding no
+        /// interpolator of its own is not enough to be structural:
+        /// <c>BSProceduralLightningController</c> holds nine, none of them called
+        /// `Interpolator`, and every one of them is driven from a sequence.
         private static bool IsStructural(NifModel model, NifItem controller) =>
             model.GetRef(controller, "Interpolator") is null
             && model.GetRef(controller, "Visibility Interpolator") is null
@@ -52,7 +57,13 @@ namespace SECmd.Fbx
         private static bool Rebuilt(NifItem child) => child.Name is "Next Controller" or "Target";
 
         /// <summary>Records the controllers on a block that hold no interpolator.</summary>
-        public static void Write(FbxObject node, NifModel model, NifItem block)
+        /// <param name="sequenced">
+        /// Controllers a sequence names, which the animation route rebuilds. Passing
+        /// none carries every structural controller, which is right only for a file
+        /// with no sequences.
+        /// </param>
+        public static void Write(
+            FbxObject node, NifModel model, NifItem block, IReadOnlySet<NifItem>? sequenced = null)
         {
             var controllers = new List<NifItem>();
 
@@ -60,7 +71,7 @@ namespace SECmd.Fbx
                  controller is not null;
                  controller = model.GetRef(controller, "Next Controller"))
             {
-                if (IsStructural(model, controller))
+                if (IsStructural(model, controller) && sequenced?.Contains(controller) != true)
                     controllers.Add(controller);
             }
 

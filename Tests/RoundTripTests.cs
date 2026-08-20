@@ -1004,6 +1004,39 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void AControllerASequenceNamesIsNotAlsoCarriedStructurally()
+        {
+            // Holding no field called "Interpolator" is not enough to make a
+            // controller structural. A BSProceduralLightningController holds nine
+            // interpolators, none of them called that, and every one is driven from a
+            // sequence -- so the animation route rebuilds it, and carrying it as
+            // structure too gave every lightning node two.
+            NifModel source = Load("nifly/TestNifFile_Animated_LE.nif");
+
+            var claimed = NifAnimAccess.SequencedControllers(source);
+
+            Assert.NotEmpty(claimed);
+
+            var scene = new FbxScene(new NifToFbx(source).Convert());
+
+            // No node carries a structural controller that a sequence already names.
+            foreach (FbxObject node in scene.Objects.Where(o => o.Class == "Model"))
+            {
+                string count = node.Properties.GetString(FbxNodeControllers.CountProperty);
+
+                if (count.Length == 0)
+                    continue;
+
+                for (int i = 0; i < int.Parse(count); i++)
+                {
+                    string type = node.Properties.GetString($"{FbxNodeControllers.Prefix}{i}_type");
+
+                    Assert.DoesNotContain(claimed, c => c.Name == type);
+                }
+            }
+        }
+
+        [Fact]
         public void ANodeThatClaimsToBeGeometryIsStillANode()
         {
             // Geometry is built on the mesh path, from a mesh. A node that names a
