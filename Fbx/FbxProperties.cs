@@ -75,6 +75,15 @@ namespace SECmd.Fbx
             return values.Count > 0 ? values[0] as string ?? fallback : fallback;
         }
 
+        /// <summary>Whether a property is present, whatever it holds.</summary>
+        /// <remarks>
+        /// Not the same question as whether it holds anything. A carrier that means
+        /// something by an empty string -- a node whose name really is empty -- needs
+        /// to tell "absent" from "empty", and every Get above answers both with the
+        /// fallback.
+        /// </remarks>
+        public bool Has(string name) => All.Any(p => p.Name == name);
+
         public int GetInt(string name, int fallback = 0) => (int)GetDouble(name, fallback);
 
         public bool GetBool(string name, bool fallback = false) => GetDouble(name, fallback ? 1 : 0) != 0;

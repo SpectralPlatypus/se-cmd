@@ -36,6 +36,46 @@ namespace SECmd.Conversion
         /// </remarks>
         public bool LegendaryEdition { get; set; }
 
+        /// <summary>
+        /// The skin instance class to build when the scene does not say which.
+        /// </summary>
+        /// <remarks>
+        /// Nothing about a mesh decides this. Across the 26,940 skinned shapes the game
+        /// ships, 15,728 are `BSDismemberSkinInstance` and 11,212 are plain
+        /// `NiSkinInstance`; the Bethesda version does not separate them, and neither
+        /// does the folder — `meshes/actors/character` alone holds 11,433 of the first
+        /// and 9,772 of the second. The difference is what the shape is *for*: a
+        /// dismember instance carries body-part slots, which is what lets a cuirass
+        /// hide the body under it and a limb come off.
+        ///
+        /// A scene converted from a NIF carries the answer and this is not consulted.
+        /// It decides only for an FBX authored elsewhere, where the dismember form is
+        /// the better guess: new Skyrim content is mostly armour and body parts, and a
+        /// shape that has slots it does not need is easier to live with than one that
+        /// needs slots it has not got.
+        /// </remarks>
+        public string SkinInstanceType { get; set; } = "BSDismemberSkinInstance";
+
+        /// <summary>
+        /// Build the collision of a skeleton rather than of an object.
+        /// </summary>
+        /// <remarks>
+        /// A skeleton's collision objects are <c>bhkBlendCollisionObject</c>s and its
+        /// bodies plain <c>bhkRigidBody</c>s, where an object's are
+        /// <c>bhkCollisionObject</c> and <c>bhkRigidBodyT</c>. The difference is not
+        /// cosmetic: the BSXFlags calculation defines a skeleton as *having* a blend
+        /// object, so a rig built without one is not a ragdoll as far as the engine is
+        /// concerned, however many bones and constraints it has.
+        ///
+        /// A scene converted from a NIF carries the classes and this is not consulted.
+        /// It decides for a skeleton authored in a DCC tool, which has nothing to
+        /// carry — the case ck-cmd covers with its <c>export_rig</c> flag.
+        ///
+        /// Null means work it out: a scene with ragdoll constraints in it is a
+        /// skeleton, since nothing else has them.
+        /// </remarks>
+        public bool? SkeletonRig { get; set; }
+
         /// <summary>Rebuild the scene's animation stacks as NIF controller sequences.</summary>
         public bool ImportAnimation { get; set; } = true;
 
@@ -73,13 +113,31 @@ namespace SECmd.Conversion
         {
             _model = NifModel.CreateNew(database, _options.Version, _options.UserVersion, _options.BSVersion);
 
-            NifItem root = _model.InsertBlock("BSFadeNode");
+            // The root's kind is carried like any other node's, and matters more:
+            // BSXFlags asks twice whether the root is exactly NiNode.
+            var sceneRoots = _scene.RootModels().ToList();
+
+            string rootType = sceneRoots.Count == 1 && !HasGeometry(sceneRoots[0])
+                ? FbxNodeType.Read(sceneRoots[0], _model, "BSFadeNode")
+                : "BSFadeNode";
+
+            NifItem root = _model.InsertBlock(rootType);
 
             // Named after the file rather than after any node in the scene (§5.2).
             _model.SetString(root, "Name", _options.RootName);
+
+            // The root is built here rather than by the walk, so everything the walk
+            // does for a node has to be done for it too.
+            if (sceneRoots.Count == 1 && !HasGeometry(sceneRoots[0]))
+            {
+                FbxNodeType.ReadFields(sceneRoots[0], _model, root, "NiNode");
+                FbxExtraDataWriter.ReadExtraData(sceneRoots[0], _model, root, Warnings);
+                FbxMultiBound.Read(sceneRoots[0], _model, root, Warnings);
+                FbxNodeControllers.Read(sceneRoots[0], _model, root, Warnings);
+            }
             _nodesByName[_options.RootName] = root;
 
-            var rootModels = _scene.RootModels().ToList();
+            var rootModels = sceneRoots;
             var children = new List<NifItem>();
 
             // FBXWrangler renames the FBX *implicit* root to the NIF root's name, so
@@ -131,6 +189,14 @@ namespace SECmd.Conversion
             AddBsxFlags(root);
 
             _model.SetRoots([root]);
+
+            // Block order is not free: a Havok block has to come before whatever
+            // references it, which is the reverse of every other block, and a
+            // constraint after the bodies it joins. Every mesh the game ships obeys
+            // this and a file built by walking a scene does not, so the blocks are put
+            // in order before the header is written -- the header records their types
+            // in order, so this has to happen first.
+            _model.ReorderBlocks(NifBlockOrder.Sorted(_model));
             _model.UpdateHeader();
 
             return _model;
@@ -160,7 +226,7 @@ namespace SECmd.Conversion
             _model.SetString(bsx, "Name", NifBsxFlags.BlockName);
             _model.FindItem(bsx, "Integer Data")?.Value.SetCount(flags);
 
-            AddExtraData(root, bsx);
+            FbxExtraDataWriter.Append(_model, root, [bsx]);
         }
 
         /// <summary>Appends one block to another's extra data list.</summary>
@@ -194,6 +260,11 @@ namespace SECmd.Conversion
                 _pendingCollision.Add(model);
                 return;
             }
+
+            // The mesh drawn for a multi-bound volume is a picture of it, not geometry.
+            // The volume itself is rebuilt from the node's properties.
+            if (FbxMultiBound.IsVolumeMesh(name))
+                return;
 
             NifTransform transform = ReadTransform(model);
 
@@ -230,17 +301,66 @@ namespace SECmd.Conversion
             if (FbxParticleWriter.IsModifierNode(model))
                 return;
 
+            // A node standing for a shape with no vertices is that shape, not a node
+            // that happens to sit where one was.
+            if (FbxNodeType.IsEmptyShape(model))
+            {
+                into.Add(BuildEmptyShape(model, name, transform));
+                return;
+            }
+
             // A node carrying a particle system becomes the system rather than a
             // NiNode: it is the same node, and emitting both would leave the system
             // parented under a copy of itself.
+            // A node is rebuilt as whatever kind of node it was. FBX has one kind
+            // and NIF has a dozen, and they differ in what the engine does with them
+            // rather than in where they sit.
+            // Any NiAVObject, not only a NiNode. A NiCamera is a node in the scene
+            // graph and not a NiNode in the schema -- it inherits NiAVObject directly,
+            // has no Children of its own, and was coming back as a plain NiNode with
+            // its frustum, viewport and LOD adjust gone.
+            string blockType = FbxNodeType.Read(model, _model, "NiNode", "NiAVObject");
+
+            // Geometry is built on the mesh path, from a mesh. A node claiming to be a
+            // shape would arrive here with no vertices to be one from.
+            if (_model.Database.Inherits(blockType, "NiTriBasedGeom")
+                || _model.Database.Inherits(blockType, "BSTriShape"))
+            {
+                blockType = "NiNode";
+            }
+
             NifItem node = NifParticleWriter.HasParticleSystem(model)
                 ? _model.WriteParticleSystem(_scene, model, name, Warnings, _pendingParticleLinks)
-                  ?? _model.InsertBlock("NiNode")
-                : _model.InsertBlock("NiNode");
+                  ?? _model.InsertBlock(blockType)
+                : _model.InsertBlock(blockType);
 
-            _model.SetString(node, "Name", name);
+            _model.SetString(node, "Name", FbxNodeType.ReadName(model, name));
             _model.SetTransform(node, transform);
+
+            // Keyed by the FBX name rather than the NIF one: that is what an animation
+            // track names, and a file's unnamed nodes would otherwise share one key.
             _nodesByName[name] = node;
+
+            // A particle system is a shape and carries a shader and an alpha property
+            // like any other; it just has no geometry for them to hang off.
+            if (NifParticleWriter.HasParticleSystem(model))
+                BuildMaterial(node, model);
+
+            // Whatever the class adds to a plain NiNode: an ordered node's sort
+            // bound, a value node's value. Carrying the class without them leaves a
+            // block that is the right kind and says nothing. A particle system is left
+            // to its own carrier, which owns every field it has.
+            if (!NifParticleWriter.HasParticleSystem(model))
+                FbxNodeType.ReadFields(model, _model, node, "NiNode");
+
+
+            FbxExtraDataWriter.ReadExtraData(model, _model, node, Warnings);
+            FbxMultiBound.Read(model, _model, node, Warnings);
+
+            // Controllers that animate nothing. A particle system rebuilds its own
+            // through its carrier, which owns the whole system.
+            if (!NifParticleWriter.HasParticleSystem(model))
+                FbxNodeControllers.Read(model, _model, node, Warnings);
 
             // Collision found under this node attaches to it rather than becoming a
             // child, so collect it before recursing into the real children.
@@ -342,23 +462,51 @@ namespace SECmd.Conversion
                 NifItem phantomCollision = _model.InsertBlock("bhkSPCollisionObject");
                 NifItem phantom = _model.InsertBlock("bhkSimpleShapePhantom");
 
+                FbxCollisionObject.Read(bodyNode, _model, phantomCollision);
+
                 _model.SetRef(phantom, "Shape", shape);
                 _model.SetRef(phantomCollision, "Body", phantom);
 
                 return phantomCollision;
             }
 
-            NifItem collision = _model.InsertBlock("bhkCollisionObject");
+            // A blend collision object is what makes a file a skeleton, so which class
+            // this is decides what the engine thinks the whole file is. Carried when
+            // the scene came from a NIF; otherwise it follows from whether this is a
+            // rig at all.
+            NifItem collision = _model.InsertBlock(
+                FbxCollisionObject.TypeOf(
+                    bodyNode, _model,
+                    IsSkeletonRig() ? "bhkBlendCollisionObject" : "bhkCollisionObject"));
 
-            // bhkRigidBodyT applies its own transform; the plain body ignores it.
-            NifItem body = _model.InsertBlock("bhkRigidBodyT");
+            // How the body and its node keep in step -- local transform, follow on
+            // animation -- is not visible in the shape and cannot be derived from it.
+            FbxCollisionObject.Read(bodyNode, _model, collision);
+
+            // A blend object left at zero gain is a bone that does not follow, so a
+            // rig built from a scene that carried no gains gets the ones ck-cmd uses.
+            if (_model.BlockInherits(collision, "bhkBlendCollisionObject"))
+            {
+                SetFloat(collision, "Heir Gain", 1f);
+                SetFloat(collision, "Vel Gain", 1f);
+            }
+
+            FbxCollisionObject.ReadGains(bodyNode, _model, collision);
+
+            // bhkRigidBodyT applies its own transform; the plain body ignores it,
+            // which is what a skeleton's bodies want since their bones place them.
+            NifItem body = _model.InsertBlock(
+                FbxCollisionObject.BodyTypeOf(
+                    bodyNode, _model, IsSkeletonRig() ? "bhkRigidBody" : "bhkRigidBodyT"));
 
             // A constraint names the bodies it joins by the node they came from.
             _bodiesByName[name] = body;
 
+
             _model.SetRef(body, "Shape", shape);
             WriteBodyTransform(body, bodyNode);
             WriteStaticMotion(body);
+            WriteMassProperties(body, shape, bodyNode);
 
             _model.SetRef(collision, "Body", body);
 
@@ -370,7 +518,9 @@ namespace SECmd.Conversion
         /// </summary>
         private void WriteBodyTransform(NifItem body, FbxObject bodyNode)
         {
-            NifTransform transform = ReadTransform(bodyNode);
+            // The body's placement is a world transform and the node carrying it may
+            // hang off a bone, so it is the node's global transform that is written.
+            NifTransform transform = FbxGlobalTransform.Of(_scene, bodyNode);
             NifVector3 t = transform.Translation;
 
             _model.FindItem(body, @"Rigid Body Info\Translation")?.Value.Set(new NifVector4(
@@ -380,6 +530,79 @@ namespace SECmd.Conversion
                 0f));
 
             _model.FindItem(body, @"Rigid Body Info\Rotation")?.Value.Set(transform.ToQuaternion());
+        }
+
+        /// <summary>
+        /// Gives a body its mass and the inertia tensor that follows from it.
+        /// </summary>
+        /// <remarks>
+        /// The two are not alike. The mass is authored and is carried across; the
+        /// tensor is a consequence of that mass and the shape, and is computed, because
+        /// ck-cmd's is computed too -- it asks Havok, and this arrives at the same
+        /// numbers the files ck-cmd generated hold.
+        ///
+        /// A static keeps neither. Its layer is the whole of the decision, and a static
+        /// carrying a mass is treated as movable, which is how scenery ends up falling
+        /// through the world -- so the carried value is dropped rather than trusted.
+        /// </remarks>
+        private void WriteMassProperties(NifItem body, NifItem shape, FbxObject bodyNode)
+        {
+            if (FbxRigidBodyInfo.IsStatic(FbxRigidBodyInfo.LayerOf(bodyNode)))
+                return;
+
+            if (FbxRigidBodyInfo.MassOf(bodyNode) is not { } mass || mass <= 0f)
+                return;
+
+            SetFloat(body, @"Rigid Body Info\Mass", mass);
+
+            if (InertiaOf(shape, mass) is not { } tensor)
+                return;
+
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m11", tensor.M11);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m12", tensor.M12);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m13", tensor.M13);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m21", tensor.M21);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m22", tensor.M22);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m23", tensor.M23);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m31", tensor.M31);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m32", tensor.M32);
+            SetFloat(body, @"Rigid Body Info\Inertia Tensor\m33", tensor.M33);
+        }
+
+        /// <summary>The tensor for a rebuilt shape, or null for one with no formula.</summary>
+        private NifMatrix33? InertiaOf(NifItem shape, float mass) => shape.Name switch
+        {
+            "bhkBoxShape" => HavokInertia.Box(
+                mass, _model.FindItem(shape, "Dimensions")?.Value.Get<NifVector3>() ?? default),
+
+            "bhkSphereShape" => HavokInertia.Sphere(
+                mass, _model.FindItem(shape, "Radius")?.Value.ToFloat() ?? 0f),
+
+            "bhkCapsuleShape" => HavokInertia.Capsule(
+                mass,
+                _model.FindItem(shape, "First Point")?.Value.Get<NifVector3>() ?? default,
+                _model.FindItem(shape, "Second Point")?.Value.Get<NifVector3>() ?? default,
+                _model.FindItem(shape, "Radius")?.Value.ToFloat() ?? 0f),
+
+            "bhkConvexVerticesShape" => HavokInertia.Convex(mass, HullOf(shape)),
+
+            _ => null
+        };
+
+        private MeshGeometry HullOf(NifItem shape)
+        {
+            var points = new List<NifVector3>();
+
+            if (_model.FindItem(shape, "Vertices") is { } vertices)
+            {
+                foreach (NifItem vertex in vertices.Children)
+                {
+                    NifVector4 v = vertex.Value.Get<NifVector4>();
+                    points.Add(new NifVector3(v.X, v.Y, v.Z));
+                }
+            }
+
+            return ShapeTessellator.ConvexHull(points);
         }
 
         /// <summary>
@@ -428,7 +651,12 @@ namespace SECmd.Conversion
         /// Finds the shape beneath a body node and fits a Havok primitive to it,
         /// choosing which by the node's name suffix.
         /// </summary>
-        private NifItem? BuildShapeFrom(FbxObject parent, string parentName, int depth = 0)
+        /// <param name="only">
+        /// Build from this child alone, so a container can take its children one at a
+        /// time rather than stopping at the first that yields a shape.
+        /// </param>
+        private NifItem? BuildShapeFrom(
+            FbxObject parent, string parentName, int depth = 0, FbxObject? only = null)
         {
             if (depth > 16)
             {
@@ -436,19 +664,38 @@ namespace SECmd.Conversion
                 return null;
             }
 
-            foreach (FbxObject child in _scene.ChildrenOf(parent.Id).Where(o => o.Class == "Model"))
+            IEnumerable<FbxObject> candidates = only is not null
+                ? [only]
+                : _scene.ChildrenOf(parent.Id).Where(o => o.Class == "Model");
+
+            foreach (FbxObject child in candidates)
             {
                 string name = NameEncoding.Unsanitize(child.Name);
 
-                // Containers pass straight through: the tree they describe is
-                // rebuilt by Havok, so only the leaf shape matters here.
-                if (name.EndsWith("_transform", StringComparison.Ordinal)
-                    || name.EndsWith("_list", StringComparison.Ordinal)
-                    || name.EndsWith("_convex_list", StringComparison.Ordinal)
-                    || name.EndsWith("_mopp", StringComparison.Ordinal))
+                // A container holds a tree, and the tree is the shape. ck-cmd
+                // rebuilds these from the Havok body it fits to the geometry; there is
+                // no Havok here, but the FBX node structure says the same thing and
+                // says it more directly.
+                if (IsPassThrough(name))
                 {
-                    if (BuildShapeFrom(child, name, depth + 1) is { } nested)
-                        return nested;
+                    // A MOPP tree is an index over the shape below it, and its code is
+                    // generated rather than carried, so the wrapper is walked through
+                    // and the shape underneath is what comes back.
+                    if (BuildShapeFrom(child, name, depth + 1) is { } inner)
+                        return inner;
+
+                    continue;
+                }
+
+                if (ContainerFor(name) is { } suffixed)
+                {
+                    // The suffix narrows it to a family; the carried class says which
+                    // member, since a transform shape and a convex transform shape
+                    // share a suffix.
+                    string container = FbxNodeType.Read(child, _model, suffixed, "bhkShape");
+
+                    if (BuildContainer(container, child, name, depth) is { } rebuilt)
+                        return rebuilt;
 
                     continue;
                 }
@@ -459,23 +706,115 @@ namespace SECmd.Conversion
                 // The suffix decides the primitive. Guessing from the geometry would
                 // silently swap a sphere for a box: their tessellations are not
                 // reliably distinguishable.
+                NifItem? built = null;
+
                 if (name.EndsWith("_box", StringComparison.Ordinal))
-                    return BuildBox(points);
+                    built = BuildBox(points);
+                else if (name.EndsWith("_sphere", StringComparison.Ordinal))
+                    built = BuildSphere(points);
+                else if (name.EndsWith("_capsule", StringComparison.Ordinal))
+                    built = BuildCapsule(points);
+                else if (name.EndsWith("_convex", StringComparison.Ordinal))
+                    built = BuildConvex(points);
+                else if (name.EndsWith("_mesh", StringComparison.Ordinal))
+                    built = BuildCompressedMesh(child, name);
 
-                if (name.EndsWith("_sphere", StringComparison.Ordinal))
-                    return BuildSphere(points);
+                if (built is null)
+                    continue;
 
-                if (name.EndsWith("_capsule", StringComparison.Ordinal))
-                    return BuildCapsule(points);
+                // Size comes back from the geometry; the material cannot, because
+                // nothing in the triangles says wood rather than stone.
+                ReadCollisionMaterial(built, child, name);
 
-                if (name.EndsWith("_convex", StringComparison.Ordinal))
-                    return BuildConvex(points);
-
-                if (name.EndsWith("_mesh", StringComparison.Ordinal))
-                    return BuildCompressedMesh(child, name);
+                return built;
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Whether a container is walked through rather than rebuilt.
+        /// </summary>
+        /// <remarks>
+        /// Only the MOPP tree. Its code has to be generated -- an empty wrapper cannot
+        /// even be written -- and the compressed mesh path makes one properly when it
+        /// needs it, so nothing is lost by passing through here.
+        /// </remarks>
+        private static bool IsPassThrough(string name) =>
+            name.EndsWith("_mopp", StringComparison.Ordinal);
+
+        /// <summary>The block a container node stands for, or null when it is not one.</summary>
+        private static string? ContainerFor(string name) => name switch
+        {
+            _ when name.EndsWith("_convex_list", StringComparison.Ordinal) => "bhkConvexListShape",
+            _ when name.EndsWith("_list", StringComparison.Ordinal) => "bhkListShape",
+
+            _ when name.EndsWith("_transform", StringComparison.Ordinal) => "bhkTransformShape",
+            _ => null
+        };
+
+        /// <summary>
+        /// Rebuilds a container shape and everything under it.
+        /// </summary>
+        /// <remarks>
+        /// The old behaviour was to walk through a container and return the first leaf
+        /// it found, on the grounds that Havok would rebuild the tree. Havok is not
+        /// here, and a list shape with six boxes came back as one box -- five sixths of
+        /// the collision gone, with the shape that remained the right shape.
+        ///
+        /// A list keeps every child. A MOPP tree and a transform shape wrap one, and a
+        /// MOPP's data is regenerated rather than carried, so the wrapper is all there
+        /// is to rebuild.
+        /// </remarks>
+        private NifItem? BuildContainer(string type, FbxObject node, string name, int depth)
+        {
+            var children = new List<NifItem>();
+
+            foreach (FbxObject child in _scene.ChildrenOf(node.Id).Where(o => o.Class == "Model"))
+            {
+                // One child at a time, so a list keeps all of them rather than the
+                // first: BuildShapeFrom stops at the first shape it can build.
+                if (BuildShapeFrom(node, name, depth + 1, only: child) is { } built)
+                    children.Add(built);
+            }
+
+            if (children.Count == 0)
+                return null;
+
+            if (!_model.KnowsBlock(type))
+                return children[0];
+
+            NifItem container = _model.InsertBlock(type);
+
+            if (type is "bhkListShape" or "bhkConvexListShape")
+            {
+                if (_model.SetArraySize(container, "Num Sub Shapes", "Sub Shapes", children.Count)
+                    is { } subShapes)
+                {
+                    for (int i = 0; i < children.Count && i < subShapes.Children.Count; i++)
+                        subShapes.Children[i].Value.SetLink(_model.IndexOf(children[i]));
+                }
+
+                // A list carries the material of what it holds, which the shapes
+                // themselves already know; the first is as good an answer as any and
+                // is what the source has when they agree, which is the only case
+                // ck-cmd accepts without a warning.
+                if (FbxCollisionMaterial.MaterialField(children[0]) is { } material)
+                    FbxCollisionMaterial.MaterialField(container)?.Value.SetCount(material.Value.ToUInt());
+            }
+            else
+            {
+                _model.SetRef(container, "Shape", children[0]);
+
+                if (children.Count > 1)
+                {
+                    Warnings.Add(
+                        $"{name}: a {type} holds one shape and this node has {children.Count}, "
+                        + "the rest are dropped");
+                }
+            }
+
+            return container;
         }
 
         /// <summary>
@@ -509,6 +848,35 @@ namespace SECmd.Conversion
             }
 
             return points;
+        }
+
+        /// <summary>
+        /// Restores the Havok material from the FBX material on the collision mesh.
+        /// </summary>
+        /// <remarks>
+        /// The export names the material after the enum, as ck-cmd does, so a shape
+        /// that came from a NIF arrives with its material spelled out and a shape
+        /// authored in a DCC tool arrives with whatever the artist named it. An
+        /// unrecognised name is reported rather than silently left as stone: the
+        /// material decides footstep sound and impact response, and a wrong one is not
+        /// visible in the mesh.
+        /// </remarks>
+        private void ReadCollisionMaterial(NifItem shape, FbxObject holder, string name)
+        {
+            FbxObject? material = _scene.ChildrenOf(holder.Id)
+                .FirstOrDefault(o => o.Class == "Material" && !FbxLodSizes.IsLevelMaterial(o.Name));
+
+            if (material is null)
+                return;
+
+            string spelled = NameEncoding.Unsanitize(material.Name);
+
+            if (spelled.Length == 0 || FbxCollisionMaterial.Apply(_model, shape, spelled))
+                return;
+
+            Warnings.Add(
+                $"{name}: \"{spelled}\" is not a Skyrim Havok material, "
+                + "the shape keeps the default");
         }
 
         private NifItem BuildBox(IReadOnlyList<NifVector3> points)
@@ -766,11 +1134,23 @@ namespace SECmd.Conversion
             if (!mesh.HasNormals)
                 mesh.RecalculateNormals();
 
-            // BSTriShape does not exist before Skyrim SE, so the edition decides
-            // which geometry block to emit.
-            NifItem shape = _options.LegendaryEdition
-                ? BuildNiTriShape(geometry, mesh)
-                : BuildBsTriShape(geometry, mesh);
+            // Normal maps are read in tangent space, so a shape without one is lit as
+            // though its normal map were flat. FBX may or may not carry tangents, and
+            // the ones it carries were split for FBX's own vertex layout, so they are
+            // regenerated here from the geometry that will actually be written.
+            if (mesh.HasUvs)
+                TangentSpace.Generate(mesh);
+
+            // Read before the shape is built rather than after. SE packs the bone
+            // weights into the vertex, so the descriptor has to know whether the shape
+            // is skinned before a single vertex is sized.
+            SkinData? skin = FbxSkinIO.ReadSkin(_scene, geometry);
+
+            // Which geometry class this was, when the scene says. The edition only
+            // decides when it does not: SE files hold NiTriShape as freely as
+            // BSTriShape, so choosing by edition alone converts every shape in a file
+            // to whichever class the edition prefers.
+            NifItem shape = BuildGeometry(geometry, mesh, skin is not null);
 
             _model.SetTransform(shape, transform);
 
@@ -792,11 +1172,111 @@ namespace SECmd.Conversion
             // Deferred: the bones are nodes elsewhere in the scene and may not have
             // been converted yet, so skins are wired up once the whole tree is
             // built.
-            if (FbxSkinIO.ReadSkin(_scene, geometry) is { } skin)
+            if (skin is not null)
                 _pendingSkins.Add((shape, skin, mesh.Vertices.Count, mesh.Triangles));
 
             return shape;
         }
+
+        /// <summary>
+        /// Packs the bone weights into an SE shape's vertices.
+        /// </summary>
+        /// <remarks>
+        /// SE reads a skinned mesh's weights from the vertex buffer, not from
+        /// <c>NiSkinData</c>, so a shape that has the blocks but not these renders
+        /// rigid while looking fully rigged in a NIF editor.
+        ///
+        /// The indices are into the shape's own bone list, which is only settled once
+        /// the skin has been written: a bone whose node is missing is dropped there,
+        /// and every index after it moves. So the list is read back and matched by
+        /// name rather than assumed to be the order the skin arrived in.
+        /// </remarks>
+        private void WriteVertexSkinning(NifItem shape, SkinData skin)
+        {
+            if (_model.FindItem(shape, "Vertex Data") is not { } vertices
+                || _model.GetRef(shape, "Skin") is not { } instance)
+            {
+                return;
+            }
+
+            var boneIndex = new Dictionary<string, uint>(StringComparer.Ordinal);
+            uint next = 0;
+
+            foreach (NifItem bone in _model.GetRefArray(instance, "Bones"))
+                boneIndex.TryAdd(_model.GetName(bone), next++);
+
+            var byVertex = skin.ByVertex();
+
+            for (int i = 0; i < vertices.Children.Count; i++)
+            {
+                NifItem vertex = vertices.Children[i];
+
+                if (_model.FindItem(vertex, "Bone Weights") is not { } weights
+                    || _model.FindItem(vertex, "Bone Indices") is not { } indices)
+                {
+                    return;
+                }
+
+                // Both are fixed four-element arrays, but nothing has sized them yet:
+                // a freshly inserted block leaves its arrays empty until asked, and
+                // writing into an array with no elements writes nowhere.
+                _model.UpdateArraySize(weights);
+                _model.UpdateArraySize(indices);
+
+                if (!byVertex.TryGetValue((ushort)i, out var influences))
+                    continue;
+
+                // Four is what the vertex holds, and ByVertex has already put the
+                // heaviest first, so the ones that do not fit are the ones to lose.
+                float total = 0f;
+                int used = Math.Min(4, influences.Count);
+
+                for (int j = 0; j < used; j++)
+                    total += influences[j].Weight;
+
+                for (int j = 0; j < used && j < weights.Children.Count; j++)
+                {
+                    (int bone, float weight) = influences[j];
+
+                    string name = bone < skin.Bones.Count ? skin.Bones[bone].Name : string.Empty;
+
+                    if (!boneIndex.TryGetValue(name, out uint index))
+                        continue;
+
+                    // Renormalised over the four that were kept, so a vertex whose
+                    // fifth influence was dropped is not left slightly limp.
+                    weights.Children[j].Value.SetFloat(total > 0f ? weight / total : 0f);
+
+                    if (j < indices.Children.Count)
+                        indices.Children[j].Value.SetCount(index);
+
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether this scene is a skeleton rather than an object.
+        /// </summary>
+        /// <remarks>
+        /// Only consulted for a scene that carries no classes of its own. Worked out
+        /// from the constraints when the caller has not said: a ragdoll constraint is
+        /// something only a skeleton has, so a scene holding one is a rig — which is
+        /// more than ck-cmd can do, since its <c>export_rig</c> is a flag the caller
+        /// must know to set.
+        /// </remarks>
+        private bool IsSkeletonRig()
+        {
+            if (_options.SkeletonRig is { } stated)
+                return stated;
+
+            _isRig ??= _options.ImportConstraints
+                       && _scene.ReadConstraints().Any(
+                           c => c.Type.Contains("Ragdoll", StringComparison.OrdinalIgnoreCase));
+
+            return _isRig.Value;
+        }
+
+        private bool? _isRig;
 
         /// <summary>Skins waiting for the whole node tree to exist.</summary>
         /// <remarks>
@@ -805,6 +1285,80 @@ namespace SECmd.Conversion
         /// </remarks>
         private readonly List<(NifItem Shape, SkinData Skin, int VertexCount, List<NifTriangle> Triangles)>
             _pendingSkins = [];
+
+        /// <summary>
+        /// The level sizes the mesh being built was marked with, if it was marked.
+        /// </summary>
+        private int[]? _lodSizes;
+
+        /// <summary>
+        /// Reads a level-of-detail marking, and puts the triangles in the order it means.
+        /// </summary>
+        /// <remarks>
+        /// The levels are a material per polygon named <c>LOD0</c>, <c>LOD1</c>,
+        /// <c>LOD2</c> — the one per-face channel a DCC tool lets an artist edit
+        /// (§5.2.4). A NIF stores them as three counts into one triangle list, which
+        /// only means anything if the triangles are grouped by level and the groups are
+        /// in order, so the grouping happens here, before the geometry is written.
+        ///
+        /// Resolved by material name rather than by index: an artist who adds or
+        /// removes a slot would otherwise shift every triangle a level, silently.
+        /// A mesh with no LOD material is not marked, and keeps whatever the counts
+        /// carried across said.
+        /// </remarks>
+        private int[]? ReadLodMarking(FbxObject geometry, MeshGeometry mesh)
+        {
+            if (FbxMeshReader.ReadPolygonMaterials(geometry) is not { } perPolygon
+                || mesh.TrianglePolygons.Count != mesh.Triangles.Count)
+            {
+                return null;
+            }
+
+            if (_scene.ParentsOf(geometry.Id).FirstOrDefault() is not { } holder)
+                return null;
+
+            var byIndex = _scene.ChildrenOf(holder.Id)
+                .Where(o => o.Class == "Material")
+                .Select(o => LevelOf(o.Name))
+                .ToList();
+
+            if (byIndex.All(level => level < 0))
+                return null;
+
+            var levels = new List<int>(mesh.Triangles.Count);
+
+            foreach (int polygon in mesh.TrianglePolygons)
+            {
+                int at = polygon < perPolygon.Count ? perPolygon[polygon] : -1;
+
+                // A face left on the shape's own material belongs to no level, and
+                // GroupByLevel keeps it at the end rather than dropping it.
+                levels.Add(at >= 0 && at < byIndex.Count ? byIndex[at] : -1);
+            }
+
+            (List<int> order, int[] sizes) = FbxLodSizes.GroupByLevel(levels);
+
+            var triangles = order.Select(i => mesh.Triangles[i]).ToList();
+            var polygons = order.Select(i => mesh.TrianglePolygons[i]).ToList();
+
+            mesh.Triangles.Clear();
+            mesh.Triangles.AddRange(triangles);
+            mesh.TrianglePolygons.Clear();
+            mesh.TrianglePolygons.AddRange(polygons);
+
+            return sizes;
+
+            static int LevelOf(string name)
+            {
+                for (int level = 0; level < FbxLodSizes.Levels; level++)
+                {
+                    if (name == FbxLodSizes.LevelMaterial(level))
+                        return level;
+                }
+
+                return -1;
+            }
+        }
 
         /// <summary>Nodes by name, for resolving bones.</summary>
         private readonly Dictionary<string, NifItem> _nodesByName = new(StringComparer.Ordinal);
@@ -816,19 +1370,114 @@ namespace SECmd.Conversion
         {
             foreach ((NifItem shape, SkinData skin, int vertexCount, var triangles) in _pendingSkins)
             {
-                var missing = _model.WriteSkin(shape, skin, _nodesByName, root, vertexCount, triangles);
+                var missing = _model.WriteSkin(
+                    shape, skin, _nodesByName, root, vertexCount, triangles,
+                    _options.SkinInstanceType);
 
                 foreach (string bone in missing)
                     Warnings.Add($"{_model.GetName(shape)}: no node named \"{bone}\", its influence is dropped");
+
+                WriteVertexSkinning(shape, skin);
             }
 
             _pendingSkins.Clear();
         }
 
-        private NifItem BuildNiTriShape(FbxObject geometry, MeshGeometry mesh)
+        /// <summary>
+        /// Rebuilds a shape that has no vertices, from the node standing for it.
+        /// </summary>
+        /// <remarks>
+        /// The counterpart of the export's own empty-shape path (§5.2.4). Everything a
+        /// shape carries except the mesh, since there is no mesh: a dummy TriShape is
+        /// where a lightning controller puts the geometry it generates, and the file
+        /// holds the shape, its shader and its alpha property with nothing in between.
+        ///
+        /// A NiTriBasedGeom still needs its data block — the class keeps its vertices
+        /// there and a null Data is not a shape the engine will load — so an empty one
+        /// is built. A BSTriShape packs its vertices inline and needs nothing.
+        /// </remarks>
+        private NifItem BuildEmptyShape(FbxObject model, string name, NifTransform transform)
         {
-            NifItem shape = _model.InsertBlock("NiTriShape");
+            string carried = FbxNodeType.Read(model, _model, string.Empty, "NiAVObject");
+
+            string type = carried.Length > 0
+                          && (_model.Database.Inherits(carried, "NiTriBasedGeom")
+                              || _model.Database.Inherits(carried, "BSTriShape"))
+                ? carried
+                : "BSTriShape";
+
+            if (_options.LegendaryEdition && _model.Database.Inherits(type, "BSTriShape"))
+                type = "NiTriShape";
+
+            NifItem shape = _model.InsertBlock(type);
+
+            _model.SetString(shape, "Name", FbxNodeType.ReadName(model, name));
+            _model.SetTransform(shape, transform);
+            _nodesByName.TryAdd(name, shape);
+
+            FbxNodeType.ReadFields(
+                model, _model, shape,
+                _model.BlockInherits(shape, "BSTriShape") ? "BSTriShape" : "NiTriBasedGeom");
+
+            FbxLodSizes.Read(model, _model, shape);
+            FbxDynamicShape.Read(model, _model, shape, []);
+            FbxExtraDataWriter.ReadExtraData(model, _model, shape, Warnings);
+            BuildMaterial(shape, model);
+
+            if (!_model.BlockInherits(shape, "BSTriShape"))
+                _model.SetRef(shape, "Data", _model.InsertBlock("NiTriShapeData"));
+
+            return shape;
+        }
+
+        /// <summary>
+        /// Builds the geometry block this shape was, or the one its edition wants.
+        /// </summary>
+        /// <remarks>
+        /// The two families differ in where the vertices live, not merely in name.
+        /// A <c>BSTriShape</c> packs them inline; everything under
+        /// <c>NiTriBasedGeom</c> keeps them in a data block beside it — and
+        /// <c>BSLODTriShape</c> is in that second family despite its name, which is
+        /// why it was coming back as a <c>BSTriShape</c> with a stray
+        /// <c>NiTriShapeData</c> left over.
+        ///
+        /// `BSTriShape` does not exist before Skyrim SE, so a carried one is refused
+        /// when building for LE.
+        /// </remarks>
+        private NifItem BuildGeometry(FbxObject geometry, MeshGeometry mesh, bool skinned)
+        {
+            string carried = FbxNodeType.Read(geometry, _model, string.Empty, "NiAVObject");
+
+            _lodSizes = ReadLodMarking(geometry, mesh);
+
+            if (carried.Length > 0 && _model.Database.Inherits(carried, "BSTriShape"))
+            {
+                return _options.LegendaryEdition
+                    ? BuildNiTriShape(geometry, mesh, "NiTriShape")
+                    : BuildBsTriShape(geometry, mesh, skinned);
+            }
+
+            if (carried.Length > 0 && _model.Database.Inherits(carried, "NiTriBasedGeom"))
+                return BuildNiTriShape(geometry, mesh, carried);
+
+            return _options.LegendaryEdition
+                ? BuildNiTriShape(geometry, mesh, "NiTriShape")
+                : BuildBsTriShape(geometry, mesh, skinned);
+        }
+
+        private NifItem BuildNiTriShape(FbxObject geometry, MeshGeometry mesh, string type)
+        {
+            NifItem shape = _model.InsertBlock(type);
             _model.SetString(shape, "Name", NameEncoding.Unsanitize(geometry.Name));
+
+            // A BSLODTriShape's levels are counts into its one triangle list, and a
+            // shape whose counts are all zero draws nothing at any distance.
+            FbxLodSizes.Read(geometry, _model, shape);
+
+            // An artist marking faces in a DCC tool outranks the counts that came in.
+            if (_lodSizes is { } sizes)
+                FbxLodSizes.WriteSizes(_model, shape, sizes);
+            FbxNodeType.ReadFields(geometry, _model, shape, "NiTriBasedGeom");
 
             NifItem data = _model.InsertBlock("NiTriShapeData");
             WriteGeometryData(data, mesh);
@@ -849,12 +1498,13 @@ namespace SECmd.Conversion
         /// conditional on those same flags, so the descriptor has to be written
         /// before the array is sized or the elements come out the wrong shape.
         /// </remarks>
-        private NifItem BuildBsTriShape(FbxObject geometry, MeshGeometry mesh)
+        private NifItem BuildBsTriShape(FbxObject geometry, MeshGeometry mesh, bool skinned)
         {
-            NifItem shape = _model.InsertBlock("BSTriShape");
+            NifItem shape = _model.InsertBlock(
+                FbxNodeType.Read(geometry, _model, "BSTriShape", "BSTriShape"));
             _model.SetString(shape, "Name", NameEncoding.Unsanitize(geometry.Name));
 
-            var descriptor = BuildVertexDescriptor(mesh);
+            var descriptor = BuildVertexDescriptor(mesh, skinned);
 
             _model.FindItem(shape, "Vertex Desc")?.Value.SetCount(descriptor.Value);
 
@@ -888,6 +1538,10 @@ namespace SECmd.Conversion
                 for (int i = 0; i < mesh.Triangles.Count && i < triangles.Children.Count; i++)
                     triangles.Children[i].Value.Set(mesh.Triangles[i]);
             }
+
+            // A dynamic shape's own buffer: the positions again, plus the fourth
+            // component that was carried because nothing here can derive it.
+            FbxDynamicShape.Read(geometry, _model, shape, mesh.Vertices);
 
             return shape;
         }
@@ -932,9 +1586,13 @@ namespace SECmd.Conversion
         /// Works out the vertex descriptor for a mesh: which attributes are present,
         /// how large a vertex is, and where each attribute sits inside one.
         /// </summary>
-        private static (ulong Value, int VertexSize) BuildVertexDescriptor(MeshGeometry mesh)
+        private static (ulong Value, int VertexSize) BuildVertexDescriptor(
+            MeshGeometry mesh, bool skinned)
         {
             var flags = VertexFlags.Vertex;
+
+            if (skinned)
+                flags |= VertexFlags.Skinned;
 
             if (mesh.HasUvs)
                 flags |= VertexFlags.UV;
@@ -981,10 +1639,22 @@ namespace SECmd.Conversion
                 offset += 4;
             }
 
+            if (skinned)
+            {
+                // Four half-precision weights and four byte indices, twelve bytes. SE
+                // reads a skinned mesh's weights from here and not from NiSkinData, so
+                // a shape without them is fully rigged in an editor and rigid in game.
+                desc.Set(BSVertexDesc.Member.SkinningDataOffset, offset);
+                offset += 12;
+            }
+
             desc.VertexSize = offset;
 
             return (desc.Value, (int)offset);
         }
+
+        /// <summary><c>BSGeometryDataFlags</c> bit 12, which announces the tangents.</summary>
+        private const uint HasTangentsFlag = 0x1000;
 
         /// <summary>Fills a <c>NiTriShapeData</c> from the neutral mesh.</summary>
         private void WriteGeometryData(NifItem data, MeshGeometry mesh)
@@ -996,8 +1666,13 @@ namespace SECmd.Conversion
             // UV array's length expression reads it, so it has to be set before the
             // array is sized.
             uint uvSets = mesh.HasUvs ? 1u : 0u;
+
+            // Bit 12 announces the tangent arrays. Writing them without it leaves
+            // them in the file for nothing to read.
+            uint bsFlags = uvSets | (mesh.HasTangents ? HasTangentsFlag : 0u);
+
             SetCount(data, "Data Flags", uvSets);
-            SetCount(data, "BS Data Flags", uvSets);
+            SetCount(data, "BS Data Flags", bsFlags);
 
             SetBool(data, "Has Normals", mesh.HasNormals);
             SetBool(data, "Has Vertex Colors", mesh.HasColors);
@@ -1006,6 +1681,12 @@ namespace SECmd.Conversion
 
             if (mesh.HasNormals)
                 WriteVector3Array(data, "Normals", mesh.Normals);
+
+            if (mesh.HasTangents)
+            {
+                WriteVector3Array(data, "Tangents", mesh.Tangents);
+                WriteVector3Array(data, "Bitangents", mesh.Bitangents);
+            }
 
             if (mesh.HasColors && _model.FindItem(data, "Vertex Colors") is { } colors)
             {
@@ -1054,10 +1735,23 @@ namespace SECmd.Conversion
         /// </summary>
         private void BuildMaterial(NifItem shape, FbxObject holder)
         {
-            FbxObject? material = _scene.ChildrenOf(holder.Id).FirstOrDefault(o => o.Class == "Material");
+            // A shape has one material. The level markers (§5.2.4) are materials too
+            // and are not one of them, so they are passed over rather than shaded with.
+            FbxObject? material = _scene.ChildrenOf(holder.Id)
+                .FirstOrDefault(o => o.Class == "Material" && !FbxLodSizes.IsLevelMaterial(o.Name));
 
             if (material is null)
                 return;
+
+            // The material says which shader it came from; only an effect shader
+            // records it, since a lighting shader is what everything else rebuilds as.
+            if (FbxEffectShader.WasWritten(material))
+            {
+                _model.SetRef(shape, "Shader Property", FbxEffectShader.Read(material, _model));
+
+                BuildAlphaProperty(shape, material.Properties);
+                return;
+            }
 
             NifItem shader = _model.InsertBlock("BSLightingShaderProperty");
             FbxProperties properties = material.Properties;
@@ -1079,6 +1773,8 @@ namespace SECmd.Conversion
             SetFloat(shader, "Alpha", (float)(1.0 - properties.GetDouble("TransparencyFactor")));
             SetFloat(shader, "Environment Map Scale", (float)properties.GetDouble("environment_map_scale"));
 
+            ReadUvTransform(shader, material);
+
             NifItem textureSet = BuildTextureSet(material);
             _model.SetRef(shader, "Texture Set", textureSet);
 
@@ -1087,10 +1783,71 @@ namespace SECmd.Conversion
             BuildAlphaProperty(shape, properties);
         }
 
+        /// <summary>
+        /// Recovers the shader's UV offset and scale from the material's textures.
+        /// </summary>
+        /// <remarks>
+        /// FBX carries these per texture, as <c>ModelUVTranslation</c> and
+        /// <c>ModelUVScaling</c>, while a NIF shader has one pair for all of its
+        /// slots. The first texture that names them wins, which is the same pair the
+        /// export wrote onto every slot.
+        ///
+        /// The default matters more than it looks. A shader is authored with an
+        /// identity scale of one, not zero, and a zero here does not fail loudly --
+        /// it multiplies every texture coordinate in the mesh to nothing.
+        /// </remarks>
+        private void ReadUvTransform(NifItem shader, FbxObject material)
+        {
+            var offset = new NifVector2(0f, 0f);
+            var scale = new NifVector2(1f, 1f);
+
+            foreach ((FbxObject texture, _) in _scene.PropertyConnectionsTo(material.Id))
+            {
+                if (Pair(texture, "ModelUVTranslation") is { } t)
+                    offset = t;
+
+                if (Pair(texture, "ModelUVScaling") is { } s)
+                {
+                    scale = s;
+                    break;
+                }
+            }
+
+            _model.FindItem(shader, "UV Offset")?.Value.Set(offset);
+            _model.FindItem(shader, "UV Scale")?.Value.Set(scale);
+        }
+
+        /// <summary>Reads a two-double FBX record, if it is there and well formed.</summary>
+        private static NifVector2? Pair(FbxObject texture, string name)
+        {
+            if (texture.Child(name) is not { } node || node.Properties.Count < 2)
+                return null;
+
+            try
+            {
+                return new NifVector2(
+                    System.Convert.ToSingle(node.Properties[0]),
+                    System.Convert.ToSingle(node.Properties[1]));
+            }
+            catch (Exception e) when (e is InvalidCastException or FormatException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Alpha properties built so far, by the source block they came from.</summary>
+        /// <remarks>
+        /// Keyed on identity rather than on content. Bethesda's files point several
+        /// shapes at one block and also carry identical blocks side by side, so
+        /// merging by equality is as wrong as never merging at all.
+        /// </remarks>
+        private readonly Dictionary<string, NifItem> _alphaProperties = new(StringComparer.Ordinal);
+
+        /// <summary>Texture sets built so far, by the source block they came from.</summary>
+        private readonly Dictionary<string, NifItem> _textureSets = new(StringComparer.Ordinal);
+
         private NifItem BuildTextureSet(FbxObject material)
         {
-            NifItem set = _model.InsertBlock("BSShaderTextureSet");
-
             // Skyrim always writes nine slots, whether or not they are used.
             const int SlotCount = 9;
             var paths = new string[SlotCount];
@@ -1116,11 +1873,24 @@ namespace SECmd.Conversion
                 paths[slot] = MaterialData.NormalizeTexturePath(path);
             }
 
+            // Shapes that shared a set in the source share one here. Keyed on which
+            // block it was rather than on the paths, since a file can hold two
+            // identical sets on purpose -- rebuilding by content would merge those.
+            string key = material.Properties.GetString(FbxMaterialWriter.TextureSetIdProperty);
+
+            if (key.Length > 0 && _textureSets.TryGetValue(key, out NifItem? shared))
+                return shared;
+
+            NifItem set = _model.InsertBlock("BSShaderTextureSet");
+
             if (_model.SetArraySize(set, "Num Textures", "Textures", SlotCount) is { } textures)
             {
                 for (int i = 0; i < SlotCount && i < textures.Children.Count; i++)
                     textures.Children[i].Value.Set(paths[i] ?? string.Empty);
             }
+
+            if (key.Length > 0)
+                _textureSets[key] = set;
 
             return set;
         }
@@ -1150,9 +1920,19 @@ namespace SECmd.Conversion
             if (alpha.ToFlags() == 0)
                 return;
 
-            NifItem block = _model.InsertBlock("NiAlphaProperty");
-            SetCount(block, "Flags", alpha.ToFlags());
-            SetCount(block, "Threshold", alpha.Threshold);
+            // Shapes that shared a block in the source share one here. Eight shapes
+            // pointing at two alpha properties came back with eight.
+            string key = properties.GetString(FbxMaterialWriter.AlphaIdProperty);
+
+            if (key.Length == 0 || !_alphaProperties.TryGetValue(key, out NifItem? block))
+            {
+                block = _model.InsertBlock("NiAlphaProperty");
+                SetCount(block, "Flags", alpha.ToFlags());
+                SetCount(block, "Threshold", alpha.Threshold);
+
+                if (key.Length > 0)
+                    _alphaProperties[key] = block;
+            }
 
             _model.SetRef(shape, "Alpha Property", block);
         }

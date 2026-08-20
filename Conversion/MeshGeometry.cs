@@ -33,6 +33,19 @@ namespace SECmd.Conversion
 
         public List<NifTriangle> Triangles { get; } = [];
 
+        /// <summary>
+        /// The polygon each triangle came from, when the mesh was read from FBX.
+        /// </summary>
+        /// <remarks>
+        /// A NIF holds triangles and an FBX holds polygons, and an n-gon fans into
+        /// several triangles, so the two lists are not the same length. Anything
+        /// reading a per-polygon channel — a `BSLODTriShape`'s levels are the one that
+        /// matters — has to come back through this to reach a triangle.
+        ///
+        /// Empty on a mesh built from a NIF, where there is nothing to come back from.
+        /// </remarks>
+        public List<int> TrianglePolygons { get; } = [];
+
         public bool HasNormals => Normals.Count > 0;
 
         public bool HasUvs => Uvs.Count > 0;

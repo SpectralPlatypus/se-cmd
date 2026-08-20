@@ -1,3 +1,4 @@
+using SECmd.Nif;
 using MeshIO.Formats.Fbx;
 using SECmd.Conversion;
 
@@ -28,6 +29,137 @@ namespace SECmd.Fbx
             return sequences;
         }
 
+        /// <summary>
+        /// Reads the tracks that hold one value for the whole take.
+        /// </summary>
+        /// <remarks>
+        /// These live on the stack rather than as curves, because a curve with no keys
+        /// is not a curve and the model's resting value is one per model where this is
+        /// one per take. See <see cref="FbxAnimWriter.AddConstant"/>.
+        /// </remarks>
+        private static void ReadConstants(FbxObject stack, Dictionary<string, AnimTrack> tracks)
+        {
+            foreach (FbxProperty70 property in stack.Properties.All)
+            {
+                string name = property.Name;
+
+                if (!name.StartsWith(FbxAnimWriter.ConstantPrefix, StringComparison.Ordinal))
+                    continue;
+
+                // <node>|<property name>, where the property name has bars of its own,
+                // so the split is on the first only.
+                string rest = name[FbxAnimWriter.ConstantPrefix.Length..];
+                int bar = rest.IndexOf(AnimProperty.Separator);
+
+                if (bar <= 0)
+                    continue;
+
+                string nodeName = rest[..bar];
+                string propertyName = rest[(bar + 1)..];
+
+                if (!float.TryParse(
+                        property.Values.FirstOrDefault()?.ToString(),
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out float value))
+                {
+                    continue;
+                }
+
+                if (!tracks.TryGetValue(nodeName, out AnimTrack? track))
+                    tracks[nodeName] = track = new AnimTrack { NodeName = nodeName };
+
+                (string type, string id, string interpolatorId, string propertyType) =
+                    AnimProperty.FromPropertyName(propertyName);
+
+                // The declared type is what says which kind of animation this is; the
+                // value alone cannot, since a boolean constant and a float one look
+                // the same.
+                bool colour = property.Type == "ColorRGB";
+
+                track.Properties.Add(new AnimProperty(colour ? 3 : 1)
+                {
+                    Name = propertyName,
+                    IsBoolean = property.Type == "bool",
+                    ControllerType = type,
+                    ControllerId = id,
+                    InterpolatorId = interpolatorId,
+                    PropertyType = propertyType,
+                    Constant = value
+                });
+            }
+        }
+
+        /// <summary>Reads the tracks that hold one transform for the whole take.</summary>
+        /// <remarks>See <see cref="FbxAnimWriter.AddPose"/>.</remarks>
+        private static void ReadPoses(FbxObject stack, Dictionary<string, AnimTrack> tracks)
+        {
+            foreach (FbxProperty70 property in stack.Properties.All)
+            {
+                if (!property.Name.StartsWith(FbxAnimWriter.PosePrefix, StringComparison.Ordinal))
+                    continue;
+
+                string nodeName = property.Name[FbxAnimWriter.PosePrefix.Length..];
+                string[] parts = (property.Values.FirstOrDefault()?.ToString() ?? string.Empty)
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+                if (parts.Length != 8)
+                    continue;
+
+                var numbers = new float[8];
+                bool ok = true;
+
+                for (int i = 0; i < 8 && ok; i++)
+                {
+                    ok = float.TryParse(
+                        parts[i],
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out numbers[i]);
+                }
+
+                if (!ok)
+                    continue;
+
+                if (!tracks.TryGetValue(nodeName, out AnimTrack? track))
+                    tracks[nodeName] = track = new AnimTrack { NodeName = nodeName };
+
+                track.Pose = new AnimPose(
+                    new NifVector3(numbers[0], numbers[1], numbers[2]),
+                    new NifQuat(numbers[3], numbers[4], numbers[5], numbers[6]),
+                    numbers[7]);
+            }
+        }
+
+        /// <summary>
+        /// Puts each track's interpolator class back.
+        /// </summary>
+        /// <remarks>
+        /// Applied after the curves are read, since it names tracks that already
+        /// exist rather than creating any. A name for a track that is not there is
+        /// ignored: the curve it belonged to may have been removed in a DCC tool.
+        /// </remarks>
+        private static void ReadInterpolatorTypes(FbxObject stack, Dictionary<string, AnimTrack> tracks)
+        {
+            foreach (FbxProperty70 property in stack.Properties.All)
+            {
+                if (!property.Name.StartsWith(FbxAnimWriter.InterpolatorPrefix, StringComparison.Ordinal))
+                    continue;
+
+                string rest = property.Name[FbxAnimWriter.InterpolatorPrefix.Length..];
+                int bar = rest.IndexOf(AnimProperty.Separator);
+
+                if (bar <= 0 || !tracks.TryGetValue(rest[..bar], out AnimTrack? track))
+                    continue;
+
+                string name = rest[(bar + 1)..];
+                string type = property.Values.FirstOrDefault()?.ToString() ?? string.Empty;
+
+                foreach (AnimProperty p in track.Properties.Where(p => p.Name == name))
+                    p.InterpolatorType = type;
+            }
+        }
+
         private static AnimSequence? ReadStack(FbxScene scene, FbxObject stack)
         {
             var sequence = new AnimSequence
@@ -46,7 +178,14 @@ namespace SECmd.Fbx
                     ReadCurveNode(scene, node, tracks);
             }
 
-            sequence.Tracks.AddRange(tracks.Values.Where(t => t.HasKeys));
+            ReadConstants(stack, tracks);
+            ReadPoses(stack, tracks);
+            ReadInterpolatorTypes(stack, tracks);
+
+            // A track with no keys is kept only when it holds a constant, which is an
+            // animation with nothing to draw rather than an empty one.
+            sequence.Tracks.AddRange(
+                tracks.Values.Where(t => t.Says));
 
             if (sequence.Tracks.Count == 0)
                 return null;

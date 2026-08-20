@@ -125,6 +125,34 @@ namespace SECmd.Fbx
         /// Adds the material element that assigns a single material to the whole
         /// mesh, which is the only case NIF has: one shape, one material.
         /// </summary>
+        /// <summary>
+        /// Adds a material element that assigns a material per polygon.
+        /// </summary>
+        /// <remarks>
+        /// The one place NIF needs this is a `BSLODTriShape`, whose triangles are
+        /// partitioned by level of detail. FBX has no notion of a LOD group, and a
+        /// material per face is the one per-polygon channel every DCC tool exposes and
+        /// lets an artist reassign — which is what makes the levels authorable rather
+        /// than merely reproducible.
+        /// </remarks>
+        public static void AddPerPolygonMaterialElement(FbxObject geometry, IReadOnlyList<int> perPolygon)
+        {
+            // The shape already has the one-material element every mesh gets; a mesh
+            // has one material layer, so this replaces it rather than joining it.
+            geometry.Node.Nodes.RemoveAll(n => n.Name == "LayerElementMaterial");
+
+            var element = new FbxNode("LayerElementMaterial", 0);
+            element.Nodes.Add(new FbxNode("Version", LayerElementVersion));
+            element.Nodes.Add(new FbxNode("Name", string.Empty));
+            element.Nodes.Add(new FbxNode("MappingInformationType", "ByPolygon"));
+            element.Nodes.Add(new FbxNode("ReferenceInformationType", "IndexToDirect"));
+            element.Nodes.Add(new FbxNode("Materials", perPolygon.ToArray()));
+
+            FbxNode? layer = geometry.Node.Nodes.FirstOrDefault(n => n.Name == "Layer");
+            int at = layer is null ? geometry.Node.Nodes.Count : geometry.Node.Nodes.IndexOf(layer);
+            geometry.Node.Nodes.Insert(at, element);
+        }
+
         public static void AddSingleMaterialElement(FbxObject geometry)
         {
             var element = new FbxNode("LayerElementMaterial", 0);

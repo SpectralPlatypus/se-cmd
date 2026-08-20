@@ -1,3 +1,4 @@
+using System.Globalization;
 using MeshIO.Formats.Fbx;
 using SECmd.Conversion;
 using SECmd.Nif;
@@ -21,6 +22,12 @@ namespace SECmd.Fbx
     /// </remarks>
     public static class FbxMaterialWriter
     {
+        /// <summary>Names the source block a material's texture set came from.</summary>
+        public const string TextureSetIdProperty = "nif_texture_set";
+
+        /// <summary>Names the source block a material's alpha property came from.</summary>
+        public const string AlphaIdProperty = "nif_alpha_property";
+
         private const int MaterialVersion = 102;
         private const int TextureVersion = 202;
 
@@ -45,9 +52,11 @@ namespace SECmd.Fbx
                 (double)emissive.R, (double)emissive.G, (double)emissive.B);
             properties.Set("EmissiveFactor", "Number", "", "A", (double)material.EmissiveMultiple);
 
-            // Diffuse and ambient are left white: NIF carries no diffuse colour, the
-            // diffuse texture supplies it.
-            properties.Set("DiffuseColor", "Color", "", "A", 1.0, 1.0, 1.0);
+            // A lighting shader carries no diffuse colour -- the texture supplies it --
+            // so this is white unless an effect shader put its base colour here.
+            NifColor3 diffuse = material.DiffuseColor;
+            properties.Set("DiffuseColor", "Color", "", "A",
+                (double)diffuse.R, (double)diffuse.G, (double)diffuse.B);
             properties.Set("AmbientColor", "Color", "", "A", 1.0, 1.0, 1.0);
             properties.Set("AmbientFactor", "Number", "", "A", 1.0);
 
@@ -66,6 +75,14 @@ namespace SECmd.Fbx
             // No standard FBX slot for these, so they ride as user properties.
             if (material.ShaderType.Length > 0)
                 properties.SetUserString("shader_type", material.ShaderType);
+
+            // Which source blocks the parts came from, so blocks shared there are
+            // shared again rather than copied per shape.
+            if (material.TextureSetId >= 0)
+                properties.SetUserString(TextureSetIdProperty, material.TextureSetId.ToString(CultureInfo.InvariantCulture));
+
+            if (material.AlphaId >= 0)
+                properties.SetUserString(AlphaIdProperty, material.AlphaId.ToString(CultureInfo.InvariantCulture));
 
             properties.Set("environment_map_scale", "Number", "", FbxProperties.UserFlags,
                 (double)material.EnvironmentMapScale);

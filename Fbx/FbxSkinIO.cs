@@ -21,6 +21,38 @@ namespace SECmd.Fbx
     /// </remarks>
     public static class FbxSkinIO
     {
+        /// <summary>The property counting the shape's body slots.</summary>
+        /// <remarks>
+        /// A slot says which part of a body a skin partition is, and it is the whole of
+        /// the difference between the two skin instance classes: a shape with slots is
+        /// a `BSDismemberSkinInstance`, one without is a plain `NiSkinInstance`. So the
+        /// class is not carried — it follows from whether these are here, which means
+        /// the two cannot disagree.
+        ///
+        /// ck-cmd carries none of this. Its export never mentions body parts, and its
+        /// import sets every partition to `SBP_32_BODY` in a branch that cannot run.
+        /// </remarks>
+        public const string SlotCountProperty = "body_slots";
+
+        /// <summary>Prefix on one slot, before its index.</summary>
+        public const string SlotPrefix = "body_slot_";
+
+        /// <summary>
+        /// The property naming the shape's skin instance class.
+        /// </summary>
+        /// <remarks>
+        /// Carried alongside the slots rather than derived from them, because the
+        /// absence of slots means two different things. A shape that had a plain
+        /// `NiSkinInstance` has none because that class has none; a shape authored in
+        /// a DCC tool has none because nothing put them there. Deriving the class from
+        /// an empty list rebuilds the first as a dismember instance, which is the
+        /// thing this set out to fix.
+        ///
+        /// Slots remain the data; this is provenance, and it is only consulted when it
+        /// is there.
+        /// </remarks>
+        public const string InstanceTypeProperty = "nif_skin_instance";
+
         private const int SkinVersion = 101;
         private const int ClusterVersion = 100;
 
@@ -45,6 +77,29 @@ namespace SECmd.Fbx
                 return problems;
 
             FbxObject skinObject = scene.AddObject("Deformer", geometry.Name + "_skin", "Skin");
+
+            // The class the shape had, when the scene came from a NIF at all.
+            if (skin.InstanceType.Length > 0)
+                skinObject.Properties.SetUserString(InstanceTypeProperty, skin.InstanceType);
+
+            // The body slots, named rather than numbered so a reader can check them.
+            if (skin.BodySlots.Count > 0)
+            {
+                skinObject.Properties.SetUserString(
+                    SlotCountProperty,
+                    skin.BodySlots.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+                for (int i = 0; i < skin.BodySlots.Count; i++)
+                {
+                    (string slot, uint flags) = skin.BodySlots[i];
+
+                    skinObject.Properties.SetUserString($"{SlotPrefix}{i}", slot);
+                    skinObject.Properties.SetUserString(
+                        $"{SlotPrefix}{i}_flags",
+                        flags.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
+            }
+
             FbxNode node = skinObject.Node;
 
             node.Nodes.Add(new FbxNode("Version", SkinVersion));
@@ -104,7 +159,33 @@ namespace SECmd.Fbx
             if (skinObject is null)
                 return null;
 
-            var skin = new SkinData();
+            var skin = new SkinData
+            {
+                InstanceType = skinObject.Properties.GetString(InstanceTypeProperty)
+            };
+
+            if (int.TryParse(
+                    skinObject.Properties.GetString(SlotCountProperty),
+                    System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out int slots))
+            {
+                for (int i = 0; i < slots; i++)
+                {
+                    string name = skinObject.Properties.GetString($"{SlotPrefix}{i}");
+
+                    if (name.Length == 0)
+                        continue;
+
+                    uint.TryParse(
+                        skinObject.Properties.GetString($"{SlotPrefix}{i}_flags"),
+                        System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out uint flags);
+
+                    skin.BodySlots.Add((name, flags));
+                }
+            }
 
             foreach (FbxObject cluster in scene.ChildrenOf(skinObject.Id)
                          .Where(o => o.Class == "Deformer" && o.SubClass == "Cluster"))
@@ -117,7 +198,13 @@ namespace SECmd.Fbx
 
                 var bone = new SkinBone
                 {
-                    Name = boneModel.Name,
+                    // Decoded, not raw. FBX names cannot hold a space or a bracket, so
+                    // a bone travels out as NPC_s_R_s_Thigh_s__ob_RThg_cb_ and has to
+                    // come back as "NPC R Thigh [RThg]" to match the node it names.
+                    // Left encoded it matches nothing, and since a skin whose bones all
+                    // fail to resolve is dropped whole, every Skyrim body part loses
+                    // its skinning without anything failing.
+                    Name = NameEncoding.Unsanitize(boneModel.Name),
                     SkinTransform = FromMatrixArray(cluster.Child("TransformLink"))
                 };
 

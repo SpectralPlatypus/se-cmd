@@ -152,6 +152,28 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void StaticBodiesGetAZeroedInertiaTensor()
+        {
+            // ck-cmd zeroes the whole matrix alongside the mass, and its conversion
+            // writes zero into the fourth column whatever the tensor held, so all
+            // twelve components go. A static that keeps a tensor is a body Havok can
+            // still be asked to spin.
+            NifModel model = RoundTrip("generate_rb_box.nif", out _);
+
+            NifItem body = model.Blocks.First(b => model.BlockInherits(b, "bhkRigidBody"));
+
+            for (int row = 1; row <= 3; row++)
+            {
+                for (int column = 1; column <= 4; column++)
+                {
+                    string field = $@"Rigid Body Info\Inertia Tensor\m{row}{column}";
+
+                    Assert.Equal(0f, model.FindItem(body, field)!.Value.ToFloat(), 6);
+                }
+            }
+        }
+
+        [Fact]
         public void BodyTransformReturnsToHavokMetres()
         {
             NifModel source = NifModel.Load(PathTo("generate_rb_box.nif"), Db);

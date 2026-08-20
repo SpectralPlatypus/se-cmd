@@ -1,3 +1,5 @@
+using SECmd.Nif;
+
 namespace SECmd.Conversion
 {
     /// <summary>How a key blends into the next one.</summary>
@@ -89,6 +91,30 @@ namespace SECmd.Conversion
         /// <summary>The property class the controller is attached to, when it is one.</summary>
         public string PropertyType { get; init; } = string.Empty;
 
+        /// <summary>
+        /// The value this property holds for the whole sequence, when it has no keys.
+        /// </summary>
+        /// <remarks>
+        /// A NIF interpolator can carry a value and no data block at all, and that is
+        /// a real animation: it says "this, for this whole sequence". It is not the
+        /// same as the property's resting value, because a different sequence can say
+        /// something different, and it is not a curve either — a curve with one key is
+        /// a curve, and this is the absence of one.
+        /// </remarks>
+        public float? Constant { get; set; }
+
+        /// <summary>
+        /// The interpolator class this track came from.
+        /// </summary>
+        /// <remarks>
+        /// Not always the obvious one. A <c>NiBoolTimelineInterpolator</c> is a
+        /// <c>NiBoolInterpolator</c> that, in nif.xml's words, "ensures that keys have
+        /// not been missed between two updates" — so rebuilding it as its base turns a
+        /// track that cannot skip an event into one that can, which shows up as an
+        /// animation occasionally not firing rather than as anything visibly wrong.
+        /// </remarks>
+        public string InterpolatorType { get; set; } = string.Empty;
+
         /// <summary>The FBX name for a visibility track.</summary>
         /// <remarks>
         /// Kept as the plain FBX property rather than an encoded one, because
@@ -171,7 +197,61 @@ namespace SECmd.Conversion
         /// <summary>Everything keyed on this node, transform and properties alike.</summary>
         public IEnumerable<AnimCurve> AllCurves => Curves.Concat(Properties.SelectMany(p => p.Curves));
 
+        /// <summary>
+        /// The fixed transform this track holds, when it holds one rather than keys.
+        /// </summary>
+        /// <remarks>
+        /// A <c>NiTransformInterpolator</c> with no data block still carries a
+        /// <c>Transform</c>, and that is the pose the node takes for the whole
+        /// sequence. It is the transform equivalent of a property's
+        /// <see cref="AnimProperty.Constant"/> and is dropped for the same reason if
+        /// nothing looks for it: the track has no keys, so it looks empty.
+        ///
+        /// The components carry their own "unset" marks, since a file can pose the
+        /// translation and leave the rotation to the node's own.
+        /// </remarks>
+        public AnimPose? Pose { get; set; }
+
         public bool HasKeys => AllCurves.Any(c => c.HasKeys);
+
+        /// <summary>
+        /// Whether this track says anything at all, keys or not.
+        /// </summary>
+        /// <remarks>
+        /// A constant holds one value for the whole sequence rather than none — two
+        /// sequences can hold different constants for the same property, which is
+        /// exactly what a "loop" sequence that hides a mesh outright does. Filtering
+        /// on <see cref="HasKeys"/> alone dropped those tracks, and with them the
+        /// controlled blocks and interpolators that carried them.
+        /// </remarks>
+        public bool Says =>
+            HasKeys || Pose is not null || Properties.Any(p => p.Constant is not null);
+    }
+
+    /// <summary>
+    /// A transform held for a whole sequence rather than keyed.
+    /// </summary>
+    /// <remarks>
+    /// Carried as the numbers the file holds — a quaternion rather than a matrix —
+    /// because this is written straight back into a <c>NiTransformInterpolator</c>'s
+    /// <c>Transform</c>, and going through a matrix and back would change the numbers
+    /// of a file nobody edited.
+    ///
+    /// A component may be the "unset" mark rather than a value, meaning the node's own
+    /// transform stands for it. That mark is <c>float.MinValue</c>, which is what the
+    /// writer already used for a base transform it did not want to override.
+    /// </remarks>
+    public sealed record AnimPose(NifVector3 Translation, NifQuat Rotation, float Scale)
+    {
+        /// <summary>The value a component takes when the file poses nothing.</summary>
+        public const float Unset = float.MinValue;
+
+        /// <summary>Whether every component is unset, so the pose says nothing at all.</summary>
+        public bool IsEmpty =>
+            Translation.X == Unset && Translation.Y == Unset && Translation.Z == Unset
+            && Rotation.W == Unset && Rotation.X == Unset
+            && Rotation.Y == Unset && Rotation.Z == Unset
+            && Scale == Unset;
     }
 
     /// <summary>

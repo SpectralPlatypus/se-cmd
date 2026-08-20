@@ -70,6 +70,33 @@ namespace SECmd.Fbx
             double R, double G, double B, double A);
 
         /// <summary>Reads a geometry object, or null when it holds no mesh.</summary>
+        /// <summary>
+        /// The material index of each polygon, or null when the mesh has one material.
+        /// </summary>
+        /// <remarks>
+        /// The only per-polygon channel every DCC tool exposes and lets an artist
+        /// reassign, which is what a `BSLODTriShape` needs: its triangles are
+        /// partitioned by level of detail and FBX has no notion of a LOD group.
+        /// </remarks>
+        public static List<int>? ReadPolygonMaterials(FbxObject geometry)
+        {
+            FbxNode? element = geometry.Node.Nodes.FirstOrDefault(n => n.Name == "LayerElementMaterial");
+
+            if (element is null)
+                return null;
+
+            string mapping = element.Nodes.FirstOrDefault(n => n.Name == "MappingInformationType")
+                ?.Properties.FirstOrDefault() as string ?? string.Empty;
+
+            if (mapping != "ByPolygon")
+                return null;
+
+            return element.Nodes.FirstOrDefault(n => n.Name == "Materials")?.Properties.FirstOrDefault()
+                   is int[] indices
+                ? [.. indices]
+                : null;
+        }
+
         public static MeshGeometry? Read(FbxObject geometry, Options? options = null)
         {
             options ??= new Options();
@@ -125,8 +152,11 @@ namespace SECmd.Fbx
                     ushort b = Emit(polygonCorners[i]);
                     ushort c = Emit(polygonCorners[i + 1]);
 
-                    if (a != b && b != c && a != c)
-                        mesh.Triangles.Add(new NifTriangle(a, b, c));
+                    if (a == b || b == c || a == c)
+                        continue;
+
+                    mesh.Triangles.Add(new NifTriangle(a, b, c));
+                    mesh.TrianglePolygons.Add(polygon);
                 }
 
                 polygonCorners.Clear();

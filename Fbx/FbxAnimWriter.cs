@@ -1,3 +1,4 @@
+using SECmd.Nif;
 using MeshIO.Formats.Fbx;
 using SECmd.Conversion;
 
@@ -86,15 +87,114 @@ namespace SECmd.Fbx
                     continue;
                 }
 
+                AddPose(stack, track);
+
                 AddChannel(scene, layer, model, "T", "Lcl Translation", track.Translation);
                 AddChannel(scene, layer, model, "R", "Lcl Rotation", track.Rotation);
                 AddChannel(scene, layer, model, "S", "Lcl Scaling", track.Scale);
 
                 foreach (AnimProperty property in track.Properties)
-                    AddPropertyChannel(scene, layer, model, property);
+                {
+                    if (property.Constant is { } value)
+                        AddConstant(stack, track.NodeName, property, value);
+                    else
+                        AddPropertyChannel(scene, layer, model, property);
+
+                    AddInterpolatorType(stack, track.NodeName, property);
+                }
             }
 
             return missing;
+        }
+
+        /// <summary>Prefix on a stack property holding a track's constant value.</summary>
+        public const string ConstantPrefix = "const_";
+
+        /// <summary>Prefix on a stack property holding a track's fixed transform.</summary>
+        public const string PosePrefix = "constxf_";
+
+        /// <summary>
+        /// Records a track that holds one transform for the whole sequence.
+        /// </summary>
+        /// <remarks>
+        /// A <c>NiTransformInterpolator</c> with no data block holds a pose rather
+        /// than keys, and it goes where a constant scalar goes: on the stack, the only
+        /// per-take place FBX has. It cannot be the model's own transform — that is
+        /// one per model where this is one per take, and two sequences can pose the
+        /// same node differently.
+        ///
+        /// Written as the numbers the file holds, a quaternion and not a matrix, so
+        /// that a file nobody edited comes back with the numbers it went out with.
+        /// </remarks>
+        private static void AddPose(FbxObject stack, AnimTrack track)
+        {
+            if (track.Pose is not { } pose)
+                return;
+
+            float[] parts =
+            [
+                pose.Translation.X, pose.Translation.Y, pose.Translation.Z,
+                pose.Rotation.W, pose.Rotation.X, pose.Rotation.Y, pose.Rotation.Z,
+                pose.Scale
+            ];
+
+            stack.Properties.SetUserString(
+                $"{PosePrefix}{track.NodeName}",
+                string.Join(
+                    ' ',
+                    parts.Select(p => p.ToString("R", System.Globalization.CultureInfo.InvariantCulture))));
+        }
+
+        /// <summary>Prefix on a stack property naming a track's interpolator class.</summary>
+        /// <remarks>
+        /// On the stack rather than in the property's name, because the name is what
+        /// FBX animates and changing its shape would change every track's identity.
+        /// One entry per node and property, as constants are.
+        /// </remarks>
+        public const string InterpolatorPrefix = "interp_";
+
+        /// <summary>Records which interpolator class a track came from.</summary>
+        private static void AddInterpolatorType(FbxObject stack, string nodeName, AnimProperty property)
+        {
+            if (property.InterpolatorType.Length == 0)
+                return;
+
+            stack.Properties.SetUserString(
+                $"{InterpolatorPrefix}{nodeName}{AnimProperty.Separator}{property.Name}",
+                property.InterpolatorType);
+        }
+
+        /// <summary>
+        /// Records a track that holds one value for the whole sequence.
+        /// </summary>
+        /// <remarks>
+        /// This cannot be a curve: a curve with no keys is not a curve, and a curve
+        /// with one invented key is a different animation that happens to look the
+        /// same. Nor can it be the model's resting value, because that is one value
+        /// per model where this is one per *take* — two sequences can hold different
+        /// constants for the same property, which is exactly what the file this was
+        /// found in does.
+        ///
+        /// The stack is the only per-take place in FBX, so it goes there, keyed by the
+        /// node and the property it belongs to.
+        /// </remarks>
+        private static void AddConstant(
+            FbxObject stack, string nodeName, AnimProperty property, float value)
+        {
+            // Typed rather than stringly, so the kind survives with the value: a
+            // boolean constant and a float one are the same number and different
+            // animations, and nothing else on the stack says which this is.
+            stack.Properties.Set(
+                $"{ConstantPrefix}{nodeName}{AnimProperty.Separator}{property.Name}",
+                property switch
+                {
+                    { IsColor: true } => "ColorRGB",
+                    { IsBoolean: true } => "bool",
+                    _ => "Number"
+                },
+                string.Empty,
+                FbxProperties.UserFlags,
+                (double)value);
         }
 
         /// <summary>

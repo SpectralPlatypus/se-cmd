@@ -33,6 +33,37 @@ namespace SECmd.Conversion
         /// <summary>The node the bone transforms are relative to.</summary>
         public string SkeletonRoot { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Which skin instance class the shape used.
+        /// </summary>
+        /// <remarks>
+        /// A `BSDismemberSkinInstance` carries body-part partitions on top of a plain
+        /// `NiSkinInstance`, and the two are not interchangeable: the dismember form is
+        /// what lets armour hide the body under it. Rebuilding every skin as the
+        /// dismember form gives that machinery to shapes that never had it, which is
+        /// the most common single difference across the game's meshes.
+        ///
+        /// Empty when the scene did not say, in which case the import picks the form
+        /// that suits the edition.
+        /// </remarks>
+        public string InstanceType { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The body slot each skin partition occupies, in partition order.
+        /// </summary>
+        /// <remarks>
+        /// This is the whole of the difference between the two skin instance classes.
+        /// A slot says which part of a body the partition is — torso, head, left hand
+        /// — and the engine uses it to hide the body under a cuirass and to take a
+        /// limb off. A shape with slots is a `BSDismemberSkinInstance`; a shape
+        /// without one is a plain `NiSkinInstance`, and there is nothing else to tell
+        /// them apart (§5.2.3).
+        ///
+        /// So the class is not carried separately: it follows from whether this is
+        /// empty, which means the two can never disagree.
+        /// </remarks>
+        public List<(string Slot, uint Flags)> BodySlots { get; } = [];
+
         /// <summary>The whole skin's transform, usually identity.</summary>
         public NifTransform SkinTransform { get; set; } = NifTransform.Identity;
 

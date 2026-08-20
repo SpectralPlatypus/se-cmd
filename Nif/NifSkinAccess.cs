@@ -46,7 +46,24 @@ namespace SECmd.Nif
             if (bones.Count == 0)
                 return null;
 
-            var result = new SkinData();
+            var result = new SkinData { InstanceType = skin.Name };
+
+            // The slots, by name rather than by number: the enum is what a reader can
+            // check, and the numbers differ between creature skeletons.
+            if (model.FindItem(skin, "Partitions") is { } slots)
+            {
+                foreach (NifItem slot in slots.Children)
+                {
+                    uint part = model.FindItem(slot, "Body Part")?.Value.ToUInt() ?? 0;
+                    uint flags = model.FindItem(slot, "Part Flag")?.Value.ToUInt() ?? 0;
+
+                    string name = model.Database.TryGetEnumOptionName("BSDismemberBodyPartType", part, out string n)
+                        ? n
+                        : part.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+                    result.BodySlots.Add((name, flags));
+                }
+            }
 
             if (model.GetRef(skin, "Skeleton Root") is { } root)
                 result.SkeletonRoot = model.GetName(root);

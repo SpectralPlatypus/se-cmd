@@ -194,6 +194,17 @@ namespace SECmd.Conversion
 
         public NifColor3 SpecularColor { get; set; } = new(1f, 1f, 1f);
 
+        /// <summary>
+        /// The colour multiplied into the diffuse texture, when the shader has one.
+        /// </summary>
+        /// <remarks>
+        /// A lighting shader has none — its diffuse comes wholly from the texture, so
+        /// this stays white and FBX gets white. An effect shader does: its base colour
+        /// is what tints the effect, and leaving it out is the difference between a
+        /// blue waterfall and a grey one.
+        /// </remarks>
+        public NifColor3 DiffuseColor { get; set; } = new(1f, 1f, 1f);
+
         /// <summary>NIF stores this over 0..999; FBX wants 0..1.</summary>
         public float SpecularStrength { get; set; }
 
@@ -212,6 +223,25 @@ namespace SECmd.Conversion
 
         /// <summary>The texture set, by slot. Empty entries mean an unused slot.</summary>
         public List<string> Textures { get; } = [];
+
+        /// <summary>
+        /// Which blocks in the source file this material's parts came from.
+        /// </summary>
+        /// <remarks>
+        /// Sharing is data, not a coincidence of equality. Bethesda's files point
+        /// several shapes at one texture set or one alpha property, and also carry
+        /// identical blocks side by side where the exporter happened to make two — so
+        /// rebuilding by content merges blocks that were meant to be separate, and
+        /// rebuilding one per shape splits blocks that were meant to be one.
+        ///
+        /// Carrying the source index settles it: same index, same block. The numbers
+        /// mean nothing outside the file they came from, which is the only place they
+        /// are read.
+        /// </remarks>
+        public int TextureSetId { get; set; } = -1;
+
+        /// <inheritdoc cref="TextureSetId"/>
+        public int AlphaId { get; set; } = -1;
 
         /// <summary>Alpha settings, when the shape carried a <c>NiAlphaProperty</c>.</summary>
         public AlphaSettings? AlphaProperty { get; set; }

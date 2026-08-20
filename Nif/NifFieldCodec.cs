@@ -63,7 +63,7 @@ namespace SECmd.Nif
                         if (element.Children.Count > 0)
                             Write(model, element, $"{name}_{i}_", sink, skip, link);
                         else if (!IsLink(element))
-                            sink($"{name}_{i}", Format(element));
+                            sink($"{name}_{i}", Format(model, element));
                         else
                             link?.Invoke($"{name}_{i}", element);
                     }
@@ -78,7 +78,7 @@ namespace SECmd.Nif
                 }
 
                 if (!IsLink(child))
-                    sink(name, Format(child));
+                    sink(name, Format(model, child));
                 else
                     link?.Invoke(name, child);
             }
@@ -112,7 +112,7 @@ namespace SECmd.Nif
                         if (element.Children.Count > 0)
                             Read(model, element, $"{name}_{i}_", source, skip, link);
                         else if (!IsLink(element) && source($"{name}_{i}") is { } text)
-                            Assign(element, text);
+                            Assign(model, element, text);
                         else if (IsLink(element))
                             link?.Invoke($"{name}_{i}", element);
                     }
@@ -129,13 +129,21 @@ namespace SECmd.Nif
                 if (IsLink(child))
                     link?.Invoke(name, child);
                 else if (source(name) is { } value)
-                    Assign(child, value);
+                    Assign(model, child, value);
             }
         }
 
         /// <summary>Formats one field's value for storage.</summary>
-        public static string Format(NifItem item) => item.Value.Type switch
+        /// <remarks>
+        /// A string is stored as its text, not its index. An index means nothing
+        /// outside the file it was written for, and a block carried across as
+        /// properties has left that file behind.
+        /// </remarks>
+        public static string Format(NifModel model, NifItem item) => item.Value.Type switch
         {
+            NifValueType.String or NifValueType.StringIndex or NifValueType.FilePath
+                or NifValueType.SizedString or NifValueType.ShortString => model.ResolveString(item),
+
             NifValueType.Vector4 => Format(item.Value.Get<NifVector4>()),
             NifValueType.Vector3 => Format(item.Value.Get<NifVector3>()),
             NifValueType.Vector2 => Format(item.Value.Get<NifVector2>()),
@@ -146,12 +154,23 @@ namespace SECmd.Nif
         };
 
         /// <summary>Parses one field's stored text back into its value.</summary>
-        public static void Assign(NifItem item, string text)
+        public static void Assign(NifModel model, NifItem item, string text)
         {
             float[] parts = Numbers(text);
 
             switch (item.Value.Type)
             {
+                case NifValueType.String:
+                case NifValueType.StringIndex:
+                case NifValueType.FilePath:
+                    model.SetString(item, text);
+                    break;
+
+                case NifValueType.SizedString:
+                case NifValueType.ShortString:
+                    item.Value.Set(text);
+                    break;
+
                 case NifValueType.Vector4:
                     item.Value.Set(new NifVector4(At(parts, 0), At(parts, 1), At(parts, 2), At(parts, 3)));
                     break;

@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Globalization;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Archives;
+using SECmd.Conversion;
+using SECmd.Fbx;
 using SECmd.Nif;
 using Xunit;
 
@@ -201,6 +203,107 @@ namespace SECmd.Tests
             ]);
         }
 
+        [Fact]
+        public void NoVanillaMeshExportsGeometryThatIsNowhere()
+        {
+            // A mesh can export with every count right and every vertex in the same
+            // place. That is what a BSDynamicTriShape did: its positions live in a
+            // buffer the engine rewrites, the static entries beside them are zero, and
+            // reading those collapsed the shape onto the origin. Nothing that counts
+            // things could see it.
+            //
+            // The fixtures cover the shapes nifly ships. This covers the shapes the
+            // game ships, which is where a conditional field nobody has thought about
+            // will actually turn up.
+            Sweep((original, db) =>
+            {
+                using var input = new MemoryStream(original);
+                NifModel model = NifModel.Load(input, db);
+
+                // NaN geometry is excluded: the game ships a handful of effect meshes
+                // whose vertices and node rotations are NaN in the file itself, and
+                // they decode through the same path as the shapes beside them that
+                // come out fine. What this is looking for is a collapse onto a finite
+                // point, which is what a field read from the wrong place produces.
+                return DegenerateGeometryTests.Degenerate(
+                    new FbxScene(new NifToFbx(model).Convert()), reportNotANumber: false);
+            });
+        }
+
+        [Fact]
+        public void EveryVanillaMeshSurvivesTheFbxRoundTrip()
+        {
+            // NIF to FBX and back over the whole game. Byte identity is not the
+            // measure here and will not be for a long time: what this asks is whether
+            // the rebuilt file still has the same blocks, which is the thing that says
+            // nothing was silently dropped on the way through.
+            //
+            // Two differences are expected everywhere and are not reported. A BSXFlags
+            // is added to files that had none, because the importer calculates one;
+            // and a rigid body comes back as bhkRigidBodyT, which is what ck-cmd's
+            // non-rig path produces too (§5.7).
+            Sweep((original, db) =>
+            {
+                using var input = new MemoryStream(original);
+                NifModel source = NifModel.Load(input, db);
+
+                if (source.FindItem(source.Footer, "Roots") is not { Children.Count: > 0 } roots
+                    || source.GetBlock(roots.Children[0]) is not { } root)
+                {
+                    return null;
+                }
+
+                var converter = new FbxToNif(
+                    new FbxScene(new NifToFbx(source).Convert()),
+                    new FbxToNifOptions
+                    {
+                        RootName = source.GetName(root),
+                        Version = source.Version,
+                        UserVersion = source.UserVersion,
+                        LegendaryEdition = source.BSVersion < 100
+                    });
+
+                return CompareBlocks(source, converter.Convert(db));
+            });
+        }
+
+        /// <summary>
+        /// How the two files' blocks differ, ignoring the differences that are meant
+        /// to be there.
+        /// </summary>
+        private static string? CompareBlocks(NifModel source, NifModel rebuilt)
+        {
+            var before = Census(source);
+            var after = Census(rebuilt);
+
+            // Calculated rather than carried, so a file that had none gains one.
+            before.Remove("BSXFlags");
+            after.Remove("BSXFlags");
+
+            // The import writes the transform-carrying body, as ck-cmd's does.
+            Fold(before, "bhkRigidBody", "bhkRigidBodyT");
+            Fold(after, "bhkRigidBody", "bhkRigidBodyT");
+
+            var differences = before.Keys.Union(after.Keys)
+                .Where(k => before.GetValueOrDefault(k) != after.GetValueOrDefault(k))
+                .OrderBy(k => k, StringComparer.Ordinal)
+                .Select(k => $"{k} {before.GetValueOrDefault(k)}->{after.GetValueOrDefault(k)}")
+                .ToList();
+
+            return differences.Count == 0 ? null : string.Join(", ", differences);
+        }
+
+        private static Dictionary<string, int> Census(NifModel model) =>
+            model.Blocks.GroupBy(b => b.Name).ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
+
+        private static void Fold(Dictionary<string, int> census, string from, string into)
+        {
+            if (!census.Remove(from, out int count))
+                return;
+
+            census[into] = census.GetValueOrDefault(into) + count;
+        }
+
         /// <summary>The reason the two differ, or null when they do not.</summary>
         private static string? Compare(byte[] original, MemoryStream saved)
         {
@@ -221,6 +324,39 @@ namespace SECmd.Tests
         /// Runs a check over every mesh in the archives, or none if none were asked
         /// for.
         /// </summary>
+        /// <summary>
+        /// Where a running sweep reports how far it has got.
+        /// </summary>
+        /// <remarks>
+        /// `dotnet test` holds everything a test writes until the run ends, so a sweep
+        /// that takes an hour is an hour of silence — there is no way to tell a slow
+        /// run from a wedged one, and no way to see a result taking shape. Progress
+        /// therefore goes to a file, which can be watched from outside while the run
+        /// is still going.
+        ///
+        /// Set <c>SECMD_PROGRESS</c> to a path to turn it on.
+        /// </remarks>
+        private static string? ProgressFile() => Environment.GetEnvironmentVariable("SECMD_PROGRESS");
+
+        /// <summary>How many meshes are checked between progress reports.</summary>
+        private static int BatchSize() =>
+            int.TryParse(Environment.GetEnvironmentVariable("SECMD_BATCH"), out int size) && size > 0
+                ? size
+                : 1000;
+
+        private static void Report(string? path, string line)
+        {
+            if (path is null)
+                return;
+
+            // Appending rather than rewriting, so an abandoned run leaves its history
+            // behind rather than only its last line.
+            lock (ProgressLock)
+                File.AppendAllText(path, line + Environment.NewLine);
+        }
+
+        private static readonly object ProgressLock = new();
+
         private static void Sweep(Func<byte[], NifXmlDatabase, string?> check, string[]? tolerated = null)
         {
             var allowed = new HashSet<string>(tolerated ?? [], StringComparer.OrdinalIgnoreCase);
@@ -233,6 +369,11 @@ namespace SECmd.Tests
             var stopwatch = Stopwatch.StartNew();
             int checked_ = 0;
 
+            string? progress = ProgressFile();
+            int batchSize = BatchSize();
+
+            Report(progress, $"--- {DateTime.Now:HH:mm:ss} starting, batches of {batchSize}");
+
             foreach (string archive in Archives)
             {
                 var reader = Archive.CreateReader(GameRelease.SkyrimSE, Path.Combine(data, archive));
@@ -242,11 +383,52 @@ namespace SECmd.Tests
                     .ToList();
 
                 if (Sample() is { } sample && sample < files.Count)
-                    files = files.OrderBy(f => f.Path.GetHashCode()).Take(sample).ToList();
+                    files = files.OrderBy(f => StableHash(f.Path)).Take(sample).ToList();
 
-                Parallel.ForEach(files, file =>
+                Report(progress, $"{archive}: {files.Count} meshes");
+
+                // Batched so there is something to report between the start and the
+                // end; each batch is still checked in parallel.
+                int batch = 0;
+
+                foreach (var group in files.Chunk(batchSize))
                 {
-                    Interlocked.Increment(ref checked_);
+                    batch++;
+                    checked_ += RunBatch(group, db, check, allowed, failures);
+
+                    Report(
+                        progress,
+                        $"  {DateTime.Now:HH:mm:ss} {archive} batch {batch}: "
+                        + $"{checked_} checked, {failures.Count} divergent, {stopwatch.Elapsed:hh\\:mm\\:ss}");
+                }
+            }
+
+            Report(progress, $"--- {DateTime.Now:HH:mm:ss} done: {checked_} checked, {failures.Count} divergent");
+
+            // Something has to have been checked, or a silent change to the archive
+            // names would turn this into a test that always passes.
+            Assert.True(checked_ > 0, $"no meshes found in {data}");
+
+            if (failures.IsEmpty)
+                return;
+
+            Assert.Fail(Describe(failures, checked_, stopwatch.Elapsed));
+        }
+
+        /// <summary>Checks one batch, in parallel.</summary>
+        /// <returns>How many were checked.</returns>
+        private static int RunBatch(
+            IReadOnlyList<IArchiveFile> files,
+            NifXmlDatabase db,
+            Func<byte[], NifXmlDatabase, string?> check,
+            HashSet<string> allowed,
+            ConcurrentBag<(string Path, string Reason)> failures)
+        {
+            int done = 0;
+
+            Parallel.ForEach(files, file =>
+                {
+                    Interlocked.Increment(ref done);
 
                     byte[] original;
 
@@ -273,24 +455,46 @@ namespace SECmd.Tests
                         failures.Add((file.Path, e.Message));
                     }
                 });
-            }
 
-            // Something has to have been checked, or a silent change to the archive
-            // names would turn this into a test that always passes.
-            Assert.True(checked_ > 0, $"no meshes found in {data}");
-
-            if (failures.IsEmpty)
-                return;
-
-            Assert.Fail(Describe(failures, checked_, stopwatch.Elapsed));
+            return done;
         }
 
         /// <summary>
         /// Groups failures by cause, since one bug shows up as hundreds of files.
         /// </summary>
+        /// <summary>
+        /// Where every divergent mesh is listed, one per line.
+        /// </summary>
+        /// <remarks>
+        /// The summary below groups by cause and shows three examples of each, which
+        /// is what makes it readable and what makes two runs impossible to compare: a
+        /// count moving from 123 to 137 says nothing about which files moved. The full
+        /// list is written here instead, sorted, so two runs can simply be diffed.
+        ///
+        /// Set <c>SECMD_FAILURES</c> to a path, or leave it unset and it derives from
+        /// <c>SECMD_PROGRESS</c>.
+        /// </remarks>
+        private static string? FailureFile() =>
+            Environment.GetEnvironmentVariable("SECMD_FAILURES")
+            ?? (ProgressFile() is { } progress ? progress + ".failures" : null);
+
+        private static void ListFailures(ConcurrentBag<(string Path, string Reason)> failures)
+        {
+            if (FailureFile() is not { } path)
+                return;
+
+            File.WriteAllLines(
+                path,
+                failures
+                    .OrderBy(f => f.Path, StringComparer.OrdinalIgnoreCase)
+                    .Select(f => $"{f.Path.Replace('\\', '/')}\t{f.Reason}"));
+        }
+
         private static string Describe(
             ConcurrentBag<(string Path, string Reason)> failures, int checked_, TimeSpan elapsed)
         {
+            ListFailures(failures);
+
             var report = new System.Text.StringBuilder()
                 .AppendLine($"{failures.Count} of {checked_} meshes did not survive the round trip "
                             + $"({elapsed.TotalSeconds:F0}s):")
@@ -308,12 +512,36 @@ namespace SECmd.Tests
                     report.AppendLine($"           {path}  [{reason}]");
             }
 
+            if (FailureFile() is { } listed)
+                report.AppendLine().AppendLine($"  every divergent mesh is listed in {listed}");
+
             return report.ToString();
         }
 
         /// <summary>Strips the numbers out of a message so one cause groups as one.</summary>
         private static string Generalise(string reason) =>
             System.Text.RegularExpressions.Regex.Replace(reason, @"0x[0-9A-Fa-f]+|\d+", "N");
+
+        /// <summary>
+        /// A hash that is the same in every process.
+        /// </summary>
+        /// <remarks>
+        /// `string.GetHashCode` is randomised per process, so sampling by it draws a
+        /// different set of meshes on every run and two runs cannot be compared —
+        /// which is how a divergence count of 123, then 137, then 139 came to look
+        /// like changes in the code rather than changes in the sample.
+        ///
+        /// FNV-1a, because any stable hash will do and this one is four lines.
+        /// </remarks>
+        private static uint StableHash(string text)
+        {
+            uint hash = 2166136261;
+
+            foreach (char c in text)
+                hash = (hash ^ char.ToLowerInvariant(c)) * 16777619;
+
+            return hash;
+        }
 
         private static int? Sample() =>
             int.TryParse(

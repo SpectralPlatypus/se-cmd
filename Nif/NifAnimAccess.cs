@@ -62,19 +62,7 @@ namespace SECmd.Nif
         /// </remarks>
         private static void ReadStandaloneControllers(NifModel model, List<AnimSequence> sequences)
         {
-            var claimed = new HashSet<NifItem>();
-
-            foreach (NifItem block in model.Blocks.Where(b => model.BlockInherits(b, "NiSequence")))
-            {
-                if (model.FindItem(block, "Controlled Blocks") is not { } controlled)
-                    continue;
-
-                foreach (NifItem entry in controlled.Children)
-                {
-                    if (model.GetRef(entry, "Controller") is { } c)
-                        claimed.Add(c);
-                }
-            }
+            HashSet<NifItem> claimed = SequencedControllers(model);
 
             var tracks = new Dictionary<string, AnimTrack>(StringComparer.Ordinal);
 
@@ -83,7 +71,10 @@ namespace SECmd.Nif
                 if (!model.BlockInherits(block, "NiAVObject"))
                     continue;
 
-                string name = model.GetName(block);
+                // The name the export gives the node, which for a block with none of
+                // its own is its class. Skipping those lost every camera's frustum
+                // controller, since a NiCamera in the game's files is unnamed.
+                string name = TrackName(model, block);
 
                 if (name.Length == 0)
                     continue;
@@ -101,13 +92,25 @@ namespace SECmd.Nif
                         if (claimed.Contains(controller))
                             continue;
 
-                        if (ReadStandaloneController(model, controller) is { } property)
+                        // A transform controller moves the node rather than naming
+                        // something on it, so its keys are the track's own curves. It
+                        // is read here and not in ReadStandaloneController, which
+                        // judges a controller by what its interpolator drives and has
+                        // nothing to return for one that drives the node itself.
+                        if (model.GetRef(controller, "Interpolator") is { } interpolator
+                            && model.BlockInherits(interpolator, "NiTransformInterpolator"))
+                        {
+                            ReadTransform(model, interpolator, TrackFor(tracks, name));
+                            continue;
+                        }
+
+                        foreach (AnimProperty property in ReadStandaloneController(model, controller))
                             TrackFor(tracks, name).Properties.Add(property);
                     }
                 }
             }
 
-            var keyed = tracks.Values.Where(t => t.HasKeys).ToList();
+            var keyed = tracks.Values.Where(t => t.Says).ToList();
 
             if (keyed.Count == 0)
                 return;
@@ -117,6 +120,50 @@ namespace SECmd.Nif
             (sequence.Start, sequence.Stop) = sequence.KeySpan();
 
             sequences.Add(sequence);
+        }
+
+        /// <summary>
+        /// The controllers a sequence names, which the sequence rebuilds.
+        /// </summary>
+        /// <remarks>
+        /// A controller named by a <c>NiControlledBlock</c> is one half of a pair: the
+        /// sequence holds the keys and the controller holds the blend slot they mix
+        /// into. Anything else that carried it would rebuild it a second time, so both
+        /// the animation route and the structural carrier ask this first.
+        /// </remarks>
+        public static HashSet<NifItem> SequencedControllers(NifModel model)
+        {
+            var claimed = new HashSet<NifItem>();
+
+            foreach (NifItem block in model.Blocks.Where(b => model.BlockInherits(b, "NiSequence")))
+            {
+                if (model.FindItem(block, "Controlled Blocks") is not { } controlled)
+                    continue;
+
+                foreach (NifItem entry in controlled.Children)
+                {
+                    if (model.GetRef(entry, "Controller") is { } c)
+                        claimed.Add(c);
+                }
+            }
+
+            return claimed;
+        }
+
+        /// <summary>
+        /// The name an animation track binds a block by.
+        /// </summary>
+        /// <remarks>
+        /// A track names a node, and the node it names is the FBX object — so this has
+        /// to be what the export calls it, which for a block with no name of its own
+        /// is its class. The name itself travels separately (`nif_name`), so an
+        /// unnamed node still comes back unnamed.
+        /// </remarks>
+        public static string TrackName(NifModel model, NifItem block)
+        {
+            string name = model.GetName(block);
+
+            return name.Length > 0 ? name : block.Name;
         }
 
         /// <summary>Everything on a node that can carry a controller chain.</summary>
@@ -136,7 +183,7 @@ namespace SECmd.Nif
         }
 
         /// <summary>
-        /// One attached controller, or null when it is not a kind this reads.
+        /// The named values one attached controller drives, which may be none.
         /// </summary>
         /// <remarks>
         /// Judged by its interpolator, as a controlled block is (see
@@ -144,37 +191,87 @@ namespace SECmd.Nif
         /// a point is a named scalar or colour, whatever the controller class is
         /// called. Transform controllers are left alone, since they move the node
         /// rather than name something on it.
+        ///
+        /// A controller can drive **two** values. `NiPSysEmitterCtlr` holds a second
+        /// interpolator in `Visibility Interpolator`, and reading only the first lost
+        /// every emitter's on/off track — and, because the track then had no keys, the
+        /// controller with it.
         /// </remarks>
-        private static AnimProperty? ReadStandaloneController(NifModel model, NifItem controller)
+        private static IEnumerable<AnimProperty> ReadStandaloneController(
+            NifModel model, NifItem controller)
         {
-            bool visibility = model.BlockInherits(controller, "NiVisController");
-            bool extraData = model.BlockInherits(controller, "NiFloatExtraDataController");
+            string id = ControllerIdOf(model, controller);
 
-            if (model.GetRef(controller, "Interpolator") is not { } interpolator)
-                return null;
-
-            bool colour = model.BlockInherits(interpolator, "NiPoint3Interpolator");
-
-            if (!colour
-                && !model.BlockInherits(interpolator, "NiFloatInterpolator")
-                && !model.BlockInherits(interpolator, "NiBoolInterpolator"))
+            foreach ((string field, string interpolatorId) in InterpolatorSlots(model, controller))
             {
-                return null;
+                if (model.GetRef(controller, field) is not { } interpolator)
+                    continue;
+
+                bool colour = model.BlockInherits(interpolator, "NiPoint3Interpolator");
+                bool boolean = model.BlockInherits(interpolator, "NiBoolInterpolator");
+
+                if (!colour && !boolean && !model.BlockInherits(interpolator, "NiFloatInterpolator"))
+                    continue;
+
+                var property = new AnimProperty(colour ? 3 : 1)
+                {
+                    Name = AnimProperty.ToPropertyName(controller.Name, id, interpolatorId, string.Empty),
+                    IsBoolean = boolean,
+                    ControllerType = controller.Name,
+                    InterpolatorType = interpolator.Name,
+                    ControllerId = id,
+                    InterpolatorId = interpolatorId
+                };
+
+                if (ReadValueKeys(model, interpolator, property))
+                    yield return property;
+            }
+        }
+
+        /// <summary>
+        /// Which of several same-typed controllers on a target this one is.
+        /// </summary>
+        /// <remarks>
+        /// nif.xml states the rule per class, as the string
+        /// <c>NiInterpController::GetCtlrID()</c> returns: for a
+        /// <c>NiPSysModifierCtlr</c> it is the <c>Modifier Name</c>, for a
+        /// <c>NiFloatExtraDataController</c> the <c>Extra Data Name</c>.
+        ///
+        /// It is not decoration. A particle system carries several modifier
+        /// controllers of the same class, and with no id to tell them apart the import
+        /// keys them all to one slot and rebuilds one controller where there were
+        /// four — which is what halved the bool interpolators of every effect mesh
+        /// that has more than one emitter.
+        /// </remarks>
+        private static string ControllerIdOf(NifModel model, NifItem controller)
+        {
+            if (model.BlockInherits(controller, "NiFloatExtraDataController"))
+                return model.GetString(controller, "Extra Data Name");
+
+            return model.BlockInherits(controller, "NiPSysModifierCtlr")
+                ? model.GetString(controller, "Modifier Name")
+                : string.Empty;
+        }
+
+        /// <summary>The interpolator fields a controller holds, and what each drives.</summary>
+        /// <remarks>
+        /// nif.xml names the pair outright for the one class that has two:
+        /// <c>NiPSysEmitterCtlr</c>'s are <c>['BirthRate', 'EmitterActive']</c>, "for
+        /// `Interpolator` and `Visibility Interpolator` respectively". Those are the
+        /// same spellings a <c>NiControlledBlock</c> uses in its `Interpolator ID`, so
+        /// a controller read here and one read through a sequence name the same track.
+        /// </remarks>
+        private static IEnumerable<(string Field, string InterpolatorId)> InterpolatorSlots(
+            NifModel model, NifItem controller)
+        {
+            if (model.FindItem(controller, "Visibility Interpolator") is null)
+            {
+                yield return ("Interpolator", string.Empty);
+                yield break;
             }
 
-            // An extra data controller names its target through the extra data's own
-            // name, which is also the id a sequence would identify it by.
-            string id = extraData ? model.GetString(controller, "Extra Data Name") : string.Empty;
-
-            var property = new AnimProperty(colour ? 3 : 1)
-            {
-                Name = AnimProperty.ToPropertyName(controller.Name, id, string.Empty, string.Empty),
-                IsBoolean = visibility,
-                ControllerType = controller.Name,
-                ControllerId = id
-            };
-
-            return ReadValueKeys(model, interpolator, property) ? property : null;
+            yield return ("Interpolator", "BirthRate");
+            yield return ("Visibility Interpolator", "EmitterActive");
         }
 
         /// <summary>One sequence, or null when it animates nothing this reads.</summary>
@@ -198,7 +295,7 @@ namespace SECmd.Nif
                     ReadControlledBlock(model, entry, tracks);
             }
 
-            sequence.Tracks.AddRange(tracks.Values.Where(t => t.HasKeys));
+            sequence.Tracks.AddRange(tracks.Values.Where(t => t.Says));
 
             if (sequence.Tracks.Count == 0)
                 return null;
@@ -238,9 +335,7 @@ namespace SECmd.Nif
 
             if (model.BlockInherits(interpolator, "NiTransformInterpolator"))
             {
-                if (model.GetRef(interpolator, "Data") is { } data)
-                    ReadTransformTrack(model, data, TrackFor(tracks, name));
-
+                ReadTransform(model, interpolator, TrackFor(tracks, name));
                 return;
             }
 
@@ -258,6 +353,7 @@ namespace SECmd.Nif
                     model.GetString(controlled, "Interpolator ID"),
                     model.GetString(controlled, "Property Type")),
                 IsBoolean = boolean,
+                InterpolatorType = interpolator.Name,
                 ControllerType = model.GetString(controlled, "Controller Type"),
                 ControllerId = model.GetString(controlled, "Controller ID"),
                 InterpolatorId = model.GetString(controlled, "Interpolator ID"),
@@ -266,6 +362,34 @@ namespace SECmd.Nif
 
             if (ReadValueKeys(model, interpolator, property))
                 TrackFor(tracks, name).Properties.Add(property);
+        }
+
+        /// <summary>
+        /// Reads a transform interpolator, keyed or posed.
+        /// </summary>
+        /// <remarks>
+        /// One with no data block is not empty: its own <c>Transform</c> is the pose
+        /// the node holds for the whole sequence. Reading only the data block lost
+        /// every such controller — the track came out with no keys and was discarded,
+        /// and nothing else in the file carries a transform controller.
+        /// </remarks>
+        private static void ReadTransform(NifModel model, NifItem interpolator, AnimTrack track)
+        {
+            if (model.GetRef(interpolator, "Data") is { } data)
+            {
+                ReadTransformTrack(model, data, track);
+                return;
+            }
+
+            var pose = new AnimPose(
+                model.FindItem(interpolator, @"Transform\Translation")?.Value.Get<NifVector3>()
+                    ?? new NifVector3(),
+                model.FindItem(interpolator, @"Transform\Rotation")?.Value.Get<NifQuat>()
+                    ?? new NifQuat(),
+                model.FindItem(interpolator, @"Transform\Scale")?.Value.ToFloat() ?? 1f);
+
+            if (!pose.IsEmpty)
+                track.Pose = pose;
         }
 
         private static AnimTrack TrackFor(Dictionary<string, AnimTrack> tracks, string name)
@@ -298,7 +422,18 @@ namespace SECmd.Nif
             if (model.GetRef(interpolator, "Data") is not { } block
                 || model.FindItem(block, "Data") is not { } group)
             {
-                return false;
+                // No data block. The interpolator's own Value is what it holds for the
+                // whole sequence, which is an animation and not a resting value: the
+                // next sequence can say something else.
+                if (model.FindItem(interpolator, "Value") is not { } constant
+                    || IsNoValue(property, constant))
+                {
+                    return false;
+                }
+
+                property.Constant = constant.Value.ToFloat();
+
+                return true;
             }
 
             AnimInterpolation interpolation = InterpolationOf(model, group);
@@ -323,6 +458,28 @@ namespace SECmd.Nif
             }
 
             return property.Curves.Any(c => c.HasKeys);
+        }
+
+        /// <summary>
+        /// Whether a pose value is the sentinel that says there is no pose value.
+        /// </summary>
+        /// <remarks>
+        /// nif.xml calls the field "Pose value if lacking NiFloatData" and gives it a
+        /// default that means "none": <c>#INV_FLT#</c> for a float interpolator,
+        /// <c>2</c> for a boolean one — a bool being 0 or 1, never 2.
+        ///
+        /// An interpolator with neither data nor a pose value holds nothing, and
+        /// reading the sentinel as a constant turns it into an animation that sets
+        /// every float it drives to 3.4e38.
+        /// </remarks>
+        private static bool IsNoValue(AnimProperty property, NifItem constant)
+        {
+            if (property.IsBoolean)
+                return constant.Value.ToUInt() > 1;
+
+            float value = constant.Value.ToFloat();
+
+            return !float.IsFinite(value) || MathF.Abs(value) > 1e30f;
         }
 
         /// <summary>

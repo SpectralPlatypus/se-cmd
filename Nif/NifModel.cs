@@ -1177,11 +1177,13 @@ namespace SECmd.Nif
         /// </remarks>
         public void SetString(NifItem block, string field, string value)
         {
-            NifItem? item = FindItem(block, field);
+            if (FindItem(block, field) is { } item)
+                SetString(item, value);
+        }
 
-            if (item is null)
-                return;
-
+        /// <summary>Sets a string field directly, for a caller that already has it.</summary>
+        public void SetString(NifItem item, string value)
+        {
             bool usesStringTable = Version >= 0x14010003
                 && item.Value.Type is NifValueType.String or NifValueType.FilePath or NifValueType.StringIndex;
 
@@ -1372,6 +1374,55 @@ namespace SECmd.Nif
 
         /// <summary>The index a link should carry to point at a block.</summary>
         public int IndexOf(NifItem block) => _blocks.IndexOf(block);
+
+        /// <summary>
+        /// Rewrites the block list in a new order, remapping every link.
+        /// </summary>
+        /// <remarks>
+        /// A link is a block *number*, so moving a block renumbers every reference to
+        /// it. The whole file's links are rewritten in one pass, the footer's roots
+        /// included, which is why this takes the complete order rather than a move.
+        ///
+        /// The order has to be a permutation of what is already here. Anything else —
+        /// a block dropped, a block twice — would leave links pointing at the wrong
+        /// thing rather than at nothing, so it is refused.
+        /// </remarks>
+        public void ReorderBlocks(IReadOnlyList<NifItem> order)
+        {
+            if (order.Count != _blocks.Count || !order.All(_blocks.Contains) || order.Distinct().Count() != order.Count)
+                throw new ArgumentException("the new order must be a permutation of the block list", nameof(order));
+
+            var moved = new Dictionary<NifItem, int>(order.Count);
+
+            for (int i = 0; i < order.Count; i++)
+                moved[order[i]] = i;
+
+            // Read every link before any of them move, so a link is never resolved
+            // through a half-renumbered list.
+            var links = new List<(NifItem Link, NifItem? Target)>();
+
+            foreach (NifItem block in _blocks)
+                CollectLinks(block, links);
+
+            CollectLinks(_footer, links);
+
+            _blocks.Clear();
+            _blocks.AddRange(order);
+
+            foreach ((NifItem link, NifItem? target) in links)
+                link.Value.SetLink(target is null ? -1 : moved[target]);
+        }
+
+        private void CollectLinks(NifItem item, List<(NifItem, NifItem?)> links)
+        {
+            foreach (NifItem child in item.Children)
+            {
+                if (child.Value.IsLink)
+                    links.Add((child, GetBlock(child)));
+                else
+                    CollectLinks(child, links);
+            }
+        }
 
         /// <summary>Points a reference field at a block, or at nothing when null.</summary>
         public void SetRef(NifItem block, string field, NifItem? target)

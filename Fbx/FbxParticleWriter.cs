@@ -137,7 +137,36 @@ namespace SECmd.Fbx
 
             foreach (NifItem modifier in model.GetRefArray(system, "Modifiers"))
                 AddModifier(scene, node, model, modifier);
+
+            AddStructuralControllers(node, model, system);
         }
+
+        /// <summary>The property counting the system's structural controllers.</summary>
+        public const string ControllerCountProperty = FbxNodeControllers.CountProperty;
+
+        /// <summary>Prefix on one structural controller's fields, before its index.</summary>
+        public const string ControllerPrefix = FbxNodeControllers.Prefix;
+
+        /// <summary>
+        /// Carries the controllers on a particle system that animate nothing.
+        /// </summary>
+        /// <remarks>
+        /// <c>NiPSysUpdateCtlr</c> is the switch that makes the system run at all, not
+        /// animation, and the animation layer cannot carry it — that layer recognises
+        /// a controller by what its interpolator drives, and this one has none (§5A.6).
+        ///
+        /// Nothing about this is particular to particle systems, and a skeleton's
+        /// <c>BSLagBoneController</c> was lost for exactly the same reason, so the
+        /// carrier itself lives in <see cref="FbxNodeControllers"/> and every node uses
+        /// it. This is the particle system's call into it.
+        /// </remarks>
+        private static void AddStructuralControllers(FbxObject node, NifModel model, NifItem system) =>
+            FbxNodeControllers.Write(node, model, system);
+
+        /// <inheritdoc cref="FbxNodeControllers.Read"/>
+        public static void ReadStructuralControllers(
+            FbxObject node, NifModel model, NifItem system, List<string> warnings) =>
+            FbxNodeControllers.Read(node, model, system, warnings);
 
         /// <summary>Whether a node stands for a particle modifier.</summary>
         public static bool IsModifierNode(FbxObject node) =>

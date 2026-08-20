@@ -122,7 +122,10 @@ namespace SECmd.Conversion
         /// </remarks>
         private void Remember(NifItem block, FbxObject node)
         {
-            string name = _model.GetName(block);
+            // The same name an animation track binds by: a block's own, or its class
+            // when it has none. The game's cameras are unnamed and their frustum
+            // controllers had nothing to bind to.
+            string name = NifAnimAccess.TrackName(_model, block);
 
             if (name.Length > 0)
                 _modelsByName.TryAdd(name, node);
@@ -186,11 +189,48 @@ namespace SECmd.Conversion
             _built[block] = node;
             Remember(block, node);
 
+            // The class, and whatever fields it adds to a plain NiNode. A particle
+            // system is left alone: it has a carrier of its own that owns every field
+            // it has, and two carriers writing one field is how one of them loses.
+            if (FbxParticleWriter.IsParticleSystem(_model, block))
+                FbxNodeType.Write(node, block);
+            else
+                FbxNodeType.WriteWithFields(node, _model, block, "NiNode", MultiBoundFields);
+
+            // A block with no name at all -- the game's cameras have none -- is
+            // exported under its class name, since FBX has no anonymous object. This
+            // is what says the name was empty rather than that.
+            FbxNodeType.WriteName(node, _model, block);
+
+            // Everything hanging off the node that FBX has no place for: behaviour
+            // graph paths, string data, bounds. BSXFlags is left out, since the import
+            // recalculates it.
+            FbxExtraDataWriter.AddExtraData(node, _model, block);
+
+            // The volume a multi-bound node culls against, which the engine uses in
+            // place of one worked out from the geometry.
+            FbxMultiBound.Write(node, _model, block);
+            AddMultiBoundMesh(scene, node, block, name);
+
             // A particle system has no geometry to export -- its vertices are a
             // runtime buffer the file only sizes -- so it stays an empty node with
             // the system carried alongside it.
+            // A controller that holds no interpolator drives nothing the animation
+            // layer can see, and nothing else in the file would bring it back. A
+            // particle system's update switch is the familiar one; a skeleton's
+            // BSLagBoneController is the same case on an ordinary node.
+            if (!FbxParticleWriter.IsParticleSystem(_model, block))
+                FbxNodeControllers.Write(node, _model, block, SequencedControllers);
+
             if (FbxParticleWriter.IsParticleSystem(_model, block))
+            {
                 FbxParticleWriter.AddParticleSystem(scene, node, _model, block);
+
+                // A particle system is a shape: it has a shader and an alpha property
+                // like any other, and they are what the effect actually looks like.
+                // It has no geometry to hang them off, so they attach to the node.
+                AddMaterialTo(scene, block, node, name, geometry: null);
+            }
 
             if (parent is null)
                 scene.ConnectToRoot(node);
@@ -237,7 +277,11 @@ namespace SECmd.Conversion
 
             NifTransform transform = NifTransform.Identity;
 
-            if (!isPhantom && _model.FindItem(body, "Translation") is { } translation)
+            // The body's placement lives inside its Rigid Body Info, not beside it.
+            // Read from the wrong path this silently yielded nothing, and every
+            // collision body in every mesh exported at the origin -- which no fixture
+            // caught, because the ones with collision all sit at the origin anyway.
+            if (!isPhantom && _model.FindItem(body, @"Rigid Body Info\Translation") is { } translation)
             {
                 // Havok works in metres; the rest of the file is in Skyrim units.
                 NifVector4 t = translation.Value.Get<NifVector4>();
@@ -246,12 +290,22 @@ namespace SECmd.Conversion
                     t.Y * ShapeTessellator.BhkScaleFactor,
                     t.Z * ShapeTessellator.BhkScaleFactor);
 
-                NifQuat rotation = _model.FindItem(body, "Rotation")?.Value.Get<NifQuat>() ?? NifQuat.Identity;
+                NifQuat rotation =
+                    _model.FindItem(body, @"Rigid Body Info\Rotation")?.Value.Get<NifQuat>() ?? NifQuat.Identity;
                 transform = new NifTransform(scaled, NifTransform.RotationFromQuaternion(rotation), 1f);
             }
 
-            FbxObject bodyNode = FbxMeshWriter.AddModel(scene, name + suffix, "Null", transform);
+            // The body's transform is a world transform, and the node it hangs from
+            // may be a bone several levels down. Written relative to that node, so the
+            // body's *global* placement is its NIF one -- which is what a DCC tool
+            // draws and what the import reads back.
+            FbxObject bodyNode = FbxMeshWriter.AddModel(
+                scene, name + suffix, "Null", FbxGlobalTransform.Under(scene, parent, transform));
+
             scene.Connect(bodyNode, parent);
+
+            FbxCollisionObject.Write(bodyNode, _model, collision, body);
+            FbxRigidBodyInfo.Write(bodyNode, _model, body);
 
             // Constraints join two bodies and are emitted once the walk has seen
             // both, so the bodies are remembered as they are converted.
@@ -265,6 +319,7 @@ namespace SECmd.Conversion
                 return;
             }
 
+            RememberOwner(shape, body);
             ConvertShape(scene, shape, bodyNode, name + suffix);
         }
 
@@ -296,6 +351,11 @@ namespace SECmd.Conversion
                 FbxObject node = FbxMeshWriter.AddModel(scene, name, "Null", NifTransform.Identity);
                 scene.Connect(node, parent);
 
+                // The suffix says what kind of container this is, but not exactly
+                // which class: a transform shape and a convex transform shape share
+                // one, as they do in ck-cmd. The class itself travels alongside.
+                FbxNodeType.Write(node, shape);
+
                 // A MOPP tree just wraps the shape it indexes; the tree itself is
                 // regenerated on import and carries nothing to convert.
                 foreach (NifItem child in ChildShapesOf(shape))
@@ -326,7 +386,227 @@ namespace SECmd.Conversion
 
             FbxObject geometry = FbxMeshWriter.AddGeometry(scene, shapeName + "_geometry", mesh);
             scene.Connect(geometry, holder);
+
+            AddCollisionMaterial(scene, shape, holder, geometry);
         }
+
+        /// <summary>
+        /// Attaches the shape's Havok material to its mesh, as ck-cmd does.
+        /// </summary>
+        /// <remarks>
+        /// Nothing in the tessellated triangles records whether the shape is wood or
+        /// stone, and the engine reads that for footstep sound and impact response. It
+        /// travels as an FBX material named after the enum, which a DCC tool can show
+        /// and edit. Materials are shared between shapes that agree, so a file with one
+        /// material comes back with one.
+        /// </remarks>
+        private void AddCollisionMaterial(
+            FbxScene scene, NifItem shape, FbxObject holder, FbxObject geometry)
+        {
+            string material = FbxCollisionMaterial.NameOf(_model, shape);
+
+            if (material.Length == 0)
+                return;
+
+            string layer = FbxCollisionMaterial.LayerOf(_model, _shapeOwners.GetValueOrDefault(shape));
+            string key = $"{material}/{layer}";
+
+            if (!_collisionMaterials.TryGetValue(key, out FbxObject? fbxMaterial))
+            {
+                fbxMaterial = scene.AddObject("Material", material, string.Empty);
+                fbxMaterial.Node.Nodes.Add(new FbxNode("Version", 102));
+                fbxMaterial.Node.Nodes.Add(new FbxNode("ShadingModel", "Phong"));
+                fbxMaterial.Node.Nodes.Add(new FbxNode("MultiLayer", 0));
+
+                fbxMaterial.Properties.Set(
+                    FbxCollisionMaterial.LayerProperty, "KString", "", FbxProperties.UserFlags, layer);
+
+                _collisionMaterials[key] = fbxMaterial;
+            }
+
+            scene.Connect(fbxMaterial, holder);
+            FbxMeshWriter.AddSingleMaterialElement(geometry);
+        }
+
+        /// <summary>
+        /// Records which body a shape belongs to, following the tree down.
+        /// </summary>
+        /// <remarks>
+        /// The collision layer lives on the body's filter, not on the shape, so a leaf
+        /// several containers below still has to find the body above it.
+        /// </remarks>
+        private void RememberOwner(NifItem shape, NifItem body, int depth = 0)
+        {
+            if (depth > 16 || !_shapeOwners.TryAdd(shape, body))
+                return;
+
+            foreach (NifItem child in ChildShapesOf(shape))
+                RememberOwner(child, body, depth + 1);
+        }
+
+        /// <summary>Collision materials emitted so far, keyed by material and layer.</summary>
+        private readonly Dictionary<string, FbxObject> _collisionMaterials = new(StringComparer.Ordinal);
+
+        /// <summary>The body each shape hangs from, for the layer its filter names.</summary>
+        private readonly Dictionary<NifItem, NifItem> _shapeOwners = [];
+
+        /// <summary>
+        /// Draws a multi-bound node's culling volume as a mesh beside it.
+        /// </summary>
+        /// <remarks>
+        /// The exact numbers travel as properties; this is so the volume can be seen
+        /// and resized in a DCC tool, which six numbers on a node cannot be. It is the
+        /// same split the collision material and the effect shader use, and the import
+        /// knows the suffix and skips it rather than turning it into geometry.
+        /// </remarks>
+        private void AddMultiBoundMesh(FbxScene scene, FbxObject node, NifItem block, string name)
+        {
+            if (!_model.BlockInherits(block, "BSMultiBoundNode")
+                || _model.GetRef(block, "Multi Bound") is not { } bound
+                || _model.GetRef(bound, "Data") is not { } data)
+            {
+                return;
+            }
+
+            MeshGeometry? mesh = data.Name switch
+            {
+                // Size is the full length of each side, where the tessellator takes
+                // half-extents.
+                "BSMultiBoundOBB" => ShapeTessellator.Box(
+                    Half(_model.FindItem(data, "Size")?.Value.Get<NifVector3>() ?? default)),
+
+                "BSMultiBoundSphere" => ShapeTessellator.Sphere(
+                    _model.FindItem(data, "Radius")?.Value.ToFloat() ?? 0f),
+
+                _ => null
+            };
+
+            if (mesh is null || mesh.Triangles.Count == 0)
+                return;
+
+            NifVector3 centre = _model.FindItem(data, "Center")?.Value.Get<NifVector3>() ?? default;
+
+            NifMatrix33 rotation = _model.FindItem(data, "Rotation") is { } r
+                ? r.Value.Get<NifMatrix33>()
+                : NifMatrix33.Identity;
+
+            string meshName = name + FbxMultiBound.MeshSuffix;
+
+            FbxObject holder = FbxMeshWriter.AddModel(
+                scene, meshName, "Mesh", new NifTransform(centre, rotation, 1f));
+
+            scene.Connect(holder, node);
+            scene.Connect(FbxMeshWriter.AddGeometry(scene, meshName + "_geometry", mesh), holder);
+        }
+
+        private static NifVector3 Half(NifVector3 size) =>
+            new(size.X * 0.5f, size.Y * 0.5f, size.Z * 0.5f);
+
+        /// <summary>
+        /// Emits a block's shader and alpha properties as an FBX material on a node.
+        /// </summary>
+        /// <param name="geometry">
+        /// The mesh the material applies to, or null for a block that has none — a
+        /// particle system's shader describes a runtime buffer rather than triangles.
+        /// </param>
+        private void AddMaterialTo(
+            FbxScene scene, NifItem shape, FbxObject holder, string name, FbxObject? geometry)
+        {
+            if (ReadMaterial(shape, name) is not { } material)
+                return;
+
+            FbxObject fbxMaterial = FbxMaterialWriter.AddMaterial(scene, material, _options.TexturePath);
+
+            // An effect shader shares almost no fields with a lighting one, so its own
+            // ride across flat on the same material rather than being forced through
+            // the common form.
+            if (_model.GetRef(shape, "Shader Property") is { } shader
+                && FbxEffectShader.Is(_model, shader))
+            {
+                FbxEffectShader.Write(fbxMaterial, _model, shader);
+            }
+
+            // A material belongs to the node carrying the mesh, not the mesh, and the
+            // geometry's material element points at index 0.
+            scene.Connect(fbxMaterial, holder);
+
+            if (geometry is not null)
+                FbxMeshWriter.AddSingleMaterialElement(geometry);
+        }
+
+        /// <summary>
+        /// The controllers a sequence names, which the sequence rebuilds.
+        /// </summary>
+        /// <remarks>
+        /// Worked out once. Every node asks, and walking every sequence per node is
+        /// the same answer computed as many times as the file has nodes.
+        /// </remarks>
+        private HashSet<NifItem>? _sequencedControllers;
+
+        private HashSet<NifItem> SequencedControllers =>
+            _sequencedControllers ??= NifAnimAccess.SequencedControllers(_model);
+
+        /// <summary>The LOD level materials, shared by every shape that has levels.</summary>
+        private readonly Dictionary<string, FbxObject> _lodMaterials = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Marks which triangles belong to which level of detail.
+        /// </summary>
+        /// <remarks>
+        /// A <c>BSLODTriShape</c>'s levels are three counts into one triangle list, and
+        /// counts alone give an artist nothing to edit: they can be carried across
+        /// (§5.2.4) but not authored. FBX has no LOD group, so the levels ride as a
+        /// material per polygon — the one per-face channel every DCC tool shows and
+        /// lets an artist reassign, and the same mechanism ck-cmd uses for collision
+        /// materials (§4.8).
+        ///
+        /// The materials are named <c>LOD0</c>, <c>LOD1</c>, <c>LOD2</c> and are
+        /// resolved by that name rather than by their index, so an artist adding or
+        /// removing a material slot does not silently shift every triangle a level.
+        /// The shape's own material stays where it was, connected first.
+        ///
+        /// This is the second, editable half of the pair the rest of the port uses:
+        /// the counts are exact and win a round trip, and a marking that disagrees with
+        /// them is an artist having said something, so it wins instead (§5C.1).
+        /// </remarks>
+        private void AddLodMaterials(
+            FbxScene scene, NifItem shape, FbxObject holder, FbxObject geometry, MeshGeometry mesh)
+        {
+            if (!_model.BlockInherits(shape, "BSLODTriShape") || mesh.Triangles.Count == 0)
+                return;
+
+            // Whatever the shape's own material took, the levels follow.
+            int first = scene.ChildrenOf(holder.Id).Count(o => o.Class == "Material");
+
+            for (int level = 0; level < FbxLodSizes.Levels; level++)
+            {
+                string name = FbxLodSizes.LevelMaterial(level);
+
+                if (!_lodMaterials.TryGetValue(name, out FbxObject? material))
+                {
+                    material = scene.AddObject("Material", name, string.Empty);
+                    material.Node.Nodes.Add(new FbxNode("Version", 102));
+                    material.Node.Nodes.Add(new FbxNode("ShadingModel", "Phong"));
+                    material.Node.Nodes.Add(new FbxNode("MultiLayer", 0));
+
+                    _lodMaterials[name] = material;
+                }
+
+                scene.Connect(material, holder);
+            }
+
+            List<int> levels = FbxLodSizes.LevelPerTriangle(_model, shape, mesh.Triangles.Count);
+
+            FbxMeshWriter.AddPerPolygonMaterialElement(geometry, [.. levels.Select(l => first + l)]);
+        }
+
+        /// <summary>Fields the multi-bound carrier owns (§5.2.2).</summary>
+        private static readonly HashSet<string> MultiBoundFields =
+            new(StringComparer.Ordinal) { "Multi Bound", "Culling Mode" };
+
+        /// <summary>Fields the LOD carrier owns (§5.2.4).</summary>
+        private static readonly HashSet<string> LodFields =
+            new(StringComparer.Ordinal) { "LOD0 Size", "LOD1 Size", "LOD2 Size", "Vertices", "Dynamic Data Size" };
 
         private IEnumerable<NifItem> ChildShapesOf(NifItem shape)
         {
@@ -520,6 +800,50 @@ namespace SECmd.Conversion
             return points;
         }
 
+        /// <summary>
+        /// Exports a shape with no vertices as a node standing for it.
+        /// </summary>
+        /// <remarks>
+        /// Everything a shape carries except the mesh: the class, its own fields, the
+        /// shader and alpha property, the extra data. FBX has no mesh worth writing
+        /// for a shape with nothing in it, and a DCC tool given one shows an object
+        /// that cannot be selected, so it is a plain node with a mark saying what it
+        /// was (§5.2.4).
+        /// </remarks>
+        private void ConvertEmptyShape(FbxScene scene, NifItem shape, FbxObject? parent)
+        {
+            string name = NameEncoding.Sanitize(_model.GetName(shape));
+
+            if (name.Length == 0)
+                name = shape.Name;
+
+            FbxObject node = FbxMeshWriter.AddModel(scene, name, "Null", _model.GetTransform(shape));
+
+            if (parent is null)
+                scene.ConnectToRoot(node);
+            else
+                scene.Connect(node, parent);
+
+            node.Properties.SetUserString(FbxNodeType.EmptyShapeProperty, "1");
+
+            FbxNodeType.WriteWithFields(
+                node, _model, shape,
+                _model.BlockInherits(shape, "BSTriShape") ? "BSTriShape" : "NiTriBasedGeom",
+                LodFields);
+
+            FbxNodeType.WriteName(node, _model, shape);
+            FbxDynamicShape.Write(node, _model, shape);
+            FbxLodSizes.Write(node, _model, shape);
+            FbxExtraDataWriter.AddExtraData(node, _model, shape);
+
+            // The shader and alpha property are what the effect looks like, and the
+            // shape having no vertices of its own does not make them any less its.
+            AddMaterialTo(scene, shape, node, name, geometry: null);
+
+            _built[shape] = node;
+            Remember(shape, node);
+        }
+
         private void ConvertGeometry(FbxScene scene, NifItem shape, FbxObject? parent)
         {
             MeshGeometry? mesh;
@@ -532,24 +856,16 @@ namespace SECmd.Conversion
             {
                 NifItem? data = _model.GetRef(shape, "Data");
 
-                if (data is null)
-                {
-                    Warnings.Add($"{_model.GetName(shape)} has no geometry data");
-                    return;
-                }
-
-                mesh = ReadGeometry(shape, data);
+                mesh = data is null ? null : ReadGeometry(shape, data);
             }
 
-            if (mesh is null)
+            // A shape with nothing to draw is still a block, and the game builds real
+            // effects out of them -- a lightning controller generates its geometry into
+            // one at runtime. It travels as a node marked as what it is, rather than
+            // not travelling.
+            if (mesh is null || mesh.IsEmpty)
             {
-                Warnings.Add($"{_model.GetName(shape)} has no readable geometry");
-                return;
-            }
-
-            if (mesh.IsEmpty)
-            {
-                Warnings.Add($"{_model.GetName(shape)} has no vertices");
+                ConvertEmptyShape(scene, shape, parent);
                 return;
             }
 
@@ -575,20 +891,33 @@ namespace SECmd.Conversion
             else
                 scene.Connect(holder, parent);
 
+            // The game ships a few effect meshes whose vertices are NaN in the file
+            // itself -- explosionilusiondark01's lightRays among them, where the
+            // node's rotation matrix is NaN in all nine entries too. Writing that into
+            // an FBX passes the problem to whatever opens it, and a DCC tool given a
+            // NaN vertex does not report a bad mesh, it misbehaves.
+            if (mesh.Vertices.Any(v => float.IsNaN(v.X) || float.IsNaN(v.Y) || float.IsNaN(v.Z)))
+                Warnings.Add($"{name}: the source's vertices are not numbers, the mesh is exported as it is");
+
             FbxObject geometry = FbxMeshWriter.AddGeometry(scene, name, mesh);
+
+            // Which geometry class this was. BSDynamicTriShape and BSTriShape hold the
+            // same vertices and are not the same thing to the engine.
+            // The class, and the fields it adds to the geometry it derives from --
+            // the LOD counts have their own carrier, being an array of three.
+            FbxNodeType.WriteWithFields(
+                geometry, _model, shape,
+                _model.BlockInherits(shape, "BSTriShape") ? "BSTriShape" : "NiTriBasedGeom",
+                LodFields);
+            FbxDynamicShape.Write(geometry, _model, shape);
+            FbxLodSizes.Write(geometry, _model, shape);
             scene.Connect(geometry, holder);
 
             ConvertSkin(scene, shape, geometry);
 
-            if (ReadMaterial(shape, name) is { } material)
-            {
-                FbxObject fbxMaterial = FbxMaterialWriter.AddMaterial(scene, material, _options.TexturePath);
+            AddMaterialTo(scene, shape, holder, name, geometry);
 
-                // A material belongs to the node carrying the mesh, not the mesh,
-                // and the geometry's material element points at index 0.
-                scene.Connect(fbxMaterial, holder);
-                FbxMeshWriter.AddSingleMaterialElement(geometry);
-            }
+            AddLodMaterials(scene, shape, holder, geometry, mesh);
 
             // A flipbook controller hangs off a property rather than off the shape,
             // but the node is what an importer has to put it back on.
@@ -635,6 +964,63 @@ namespace SECmd.Conversion
         }
 
         /// <summary>
+        /// The visible half of an effect shader, as an ordinary FBX material.
+        /// </summary>
+        /// <remarks>
+        /// The exact values travel as properties (see <see cref="FbxEffectShader"/>)
+        /// and are what the import reads back. This is the other half: enough of the
+        /// shader expressed in FBX's own terms that the surface looks like itself in a
+        /// DCC tool — its texture on the diffuse channel, its base colour tinting it,
+        /// its own UV transform.
+        ///
+        /// Without it the material is a white Phong with nothing connected, and an
+        /// artist opening the file sees a blank surface beside correctly textured
+        /// lighting-shader ones. The properties would still reimport perfectly, which
+        /// is exactly what makes that failure easy to miss.
+        /// </remarks>
+        private MaterialData ReadEffectMaterial(NifItem shape, NifItem shader, string name)
+        {
+            NifColor4 baseColor = _model.FindItem(shader, "Base Color") is { } colour
+                ? colour.Value.Get<NifColor4>()
+                : new NifColor4(1f, 1f, 1f, 1f);
+
+            var material = new MaterialData
+            {
+                Name = name,
+                DiffuseColor = new NifColor3(baseColor.R, baseColor.G, baseColor.B),
+
+                // The base colour's alpha is the effect's overall opacity.
+                Alpha = baseColor.A,
+
+                EmissiveColor = new NifColor3(baseColor.R, baseColor.G, baseColor.B),
+                EmissiveMultiple = FloatOf(shader, "Base Color Scale", 1f),
+                UvOffset = Vector2Of(shader, "UV Offset", new NifVector2(0f, 0f)),
+                UvScale = Vector2Of(shader, "UV Scale", new NifVector2(1f, 1f)),
+                TextureClampMode = _model.GetUInt(shader, "Texture Clamp Mode")
+            };
+
+            // Same as a lighting shader's: the alpha property is the shape's, not the
+            // shader's, and it drives the transparency connection on the texture.
+            if (_model.GetRef(shape, "Alpha Property") is { } alpha)
+            {
+                material.AlphaId = _model.IndexOf(alpha);
+
+                material.AlphaProperty = AlphaSettings.FromFlags(
+                    (ushort)_model.GetUInt(alpha, "Flags"),
+                    (byte)_model.GetUInt(alpha, "Threshold"));
+            }
+
+            // An effect shader names its textures directly rather than through a set.
+            // Only the first has a standard FBX channel; the greyscale map follows the
+            // convention the texture set uses for its later slots.
+            material.Textures.Add(_model.GetString(shader, "Source Texture"));
+            material.Textures.Add(string.Empty);
+            material.Textures.Add(_model.GetString(shader, "Greyscale Texture"));
+
+            return material;
+        }
+
+        /// <summary>
         /// Reads a shape's shader and alpha properties into the neutral material
         /// form, or null when it has no shader property.
         /// </summary>
@@ -642,8 +1028,16 @@ namespace SECmd.Conversion
         {
             NifItem? shader = _model.GetRef(shape, "Shader Property");
 
-            if (shader is null || !_model.BlockInherits(shader, "BSLightingShaderProperty"))
+            if (shader is null)
                 return null;
+
+            // An effect shader has none of the fields read below -- no specular model,
+            // no texture set -- so it gets a bare material to hang its own fields on
+            // rather than being read as a lighting shader that happens to be empty.
+            // ck-cmd returns null here instead, which loses the shape's material
+            // entirely: see `docs/fbx-nif-conversion-spec.md` §4.3.
+            if (FbxEffectShader.Is(_model, shader))
+                return ReadEffectMaterial(shape, shader, name);
 
             var material = new MaterialData
             {
@@ -672,12 +1066,16 @@ namespace SECmd.Conversion
             if (_model.GetRef(shader, "Texture Set") is { } textureSet
                 && _model.FindItem(textureSet, "Textures") is { } textures)
             {
+                material.TextureSetId = _model.IndexOf(textureSet);
+
                 foreach (NifItem texture in textures.Children)
                     material.Textures.Add(texture.Value.AsString());
             }
 
             if (_model.GetRef(shape, "Alpha Property") is { } alphaProperty)
             {
+                material.AlphaId = _model.IndexOf(alphaProperty);
+
                 material.AlphaProperty = AlphaSettings.FromFlags(
                     (ushort)_model.GetUInt(alphaProperty, "Flags"),
                     (byte)_model.GetUInt(alphaProperty, "Threshold"));
@@ -736,6 +1134,38 @@ namespace SECmd.Conversion
         /// fields, X alongside the position and Y and Z alongside the normal and
         /// tangent, because it is packed into the spare lanes of those vectors.
         /// </remarks>
+        /// <summary>
+        /// A dynamic shape's own vertex buffer, when it has one worth reading.
+        /// </summary>
+        /// <remarks>
+        /// `BSDynamicTriShape` carries a second array of positions that the engine
+        /// rewrites as the mesh moves. In the files seen it is not a copy of the
+        /// static ones — those are zero, and this is where the shape actually is.
+        ///
+        /// Null when the shape has no such buffer, or when it does not line up with
+        /// the vertex data, since a mismatched buffer says less than the static
+        /// positions do.
+        /// </remarks>
+        private List<NifVector3>? DynamicPositions(NifItem shape, int count)
+        {
+            if (!_model.BlockInherits(shape, "BSDynamicTriShape")
+                || _model.FindItem(shape, "Vertices") is not { } buffer
+                || buffer.Children.Count != count)
+            {
+                return null;
+            }
+
+            var positions = new List<NifVector3>(count);
+
+            foreach (NifItem vertex in buffer.Children)
+            {
+                NifVector4 v = vertex.Value.Get<NifVector4>();
+                positions.Add(new NifVector3(v.X, v.Y, v.Z));
+            }
+
+            return positions;
+        }
+
         private MeshGeometry? ReadBsTriShapeGeometry(NifItem shape)
         {
             NifItem? vertexData = _model.FindItem(shape, "Vertex Data");
@@ -796,9 +1226,21 @@ namespace SECmd.Conversion
             bool hasUvs = _model.FindItem(first, "UV") is not null;
             bool hasColors = _model.FindItem(first, "Vertex Colors") is not null;
 
-            foreach (NifItem vertex in vertexData.Children)
+            // A dynamic shape keeps its positions in the buffer the engine writes
+            // into every frame, and the static entries beside them are zero. Reading
+            // those instead collapses the whole mesh onto the origin -- 136 vertices
+            // all in one place -- with the right counts throughout, so nothing about
+            // the file looks wrong.
+            List<NifVector3>? dynamic = DynamicPositions(shape, vertexData.Children.Count);
+
+            for (int i = 0; i < vertexData.Children.Count; i++)
             {
-                NifVector3 position = _model.FindItem(vertex, "Vertex")?.Value.Get<NifVector3>() ?? new NifVector3();
+                NifItem vertex = vertexData.Children[i];
+
+                NifVector3 position = dynamic is not null
+                    ? dynamic[i]
+                    : _model.FindItem(vertex, "Vertex")?.Value.Get<NifVector3>() ?? new NifVector3();
+
                 mesh.Vertices.Add(transform.Apply(position));
 
                 if (hasNormals)
