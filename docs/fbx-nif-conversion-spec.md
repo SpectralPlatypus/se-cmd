@@ -451,9 +451,31 @@ So it travels with the particle system's structure, as `particle_controllers` (a
 and one `npc_<i>_` group per controller, which is also where it belongs: it says
 something about the system, not about a timeline.
 
-The split is on the interpolator. A controller that holds one is animation and goes the
-other way; carrying it here as well would rebuild it twice. `Target` and
-`Next Controller` are not carried, since both are rebuilt from the chain.
+`Target` and `Next Controller` are not carried, since both are rebuilt from the chain.
+
+##### Nothing about this is particular to particle systems
+
+A `BSLagBoneController` makes a bone trail behind the one above it by a fixed amount.
+That is a property of the skeleton rather than of a timeline, it holds no interpolator
+either, and it was lost on every skeleton that had one. So the carrier belongs to **any
+node**, and the particle system is one caller of it.
+
+Two things are excluded rather than carried, and both are exclusions the animation route
+would otherwise duplicate:
+
+- **A controller holding an interpolator**, in either slot — the second matters, since an
+  emitter's on/off track lives there (§5A.6). That is animation and goes the other way.
+- **A controller a sequence names.** Holding no field called `Interpolator` is not enough:
+  a `BSProceduralLightningController` holds nine interpolators, none of them called that,
+  and every one is driven from a sequence. The animation route rebuilds it from the
+  controlled blocks, and carrying it as structure too gave every lightning node two. The
+  animation reader already computes that set — a controller a `NiControlledBlock` names is
+  one half of a pair — so both routes ask the same question.
+
+The sequence machinery only looks like a structural controller. A `NiControllerManager`
+holds no interpolator of its own, but it *is* the animation layer, rebuilt from the
+sequences; carrying it here put a manager back into files whose animation had been turned
+off.
 
 ### 4.10 Constraints
 
@@ -533,6 +555,46 @@ Two exporter workarounds:
   rather than through the mapping mode.
 
 Alpha presence is detected from any colour with alpha < 1.
+
+#### 5.2.5 What a node can be, and what it is called
+
+**Any `NiAVObject`, not only a `NiNode`.** A `NiCamera` is a node in the scene graph and
+not a `NiNode` in the schema — it inherits `NiAVObject` directly and has no `Children` of
+its own. Reading the carried class against `NiNode` rejected it, so every camera came
+back as a plain node with its frustum, viewport and LOD adjust gone.
+
+One class is refused explicitly: geometry is built on the mesh path, from a mesh, and a
+node naming a shape class would arrive there with no vertices to be one from. The one
+exception is a node marked as an empty shape, below.
+
+**A block with no name is still a block.** The game's cameras have none. FBX has no
+anonymous object, so the export falls back to the class name — and three things have to
+agree on that, or the node is lost in a different way each time:
+
+| Who | Why |
+| --- | --- |
+| The export, naming the FBX object | Something has to be there |
+| The animation reader, keying tracks | A track names a node; a nameless one has no name to be named by |
+| The model lookup an FBX track binds through | Or the controller has nothing to hang on |
+
+The name itself travels separately, as `nif_name`, holding the empty string. It is
+written **only** when the name is empty, and read back as *present or absent* rather than
+by its value — every property getter answers absent and empty alike with its fallback,
+which is the one distinction this needs.
+
+**A shape with no vertices travels as a node.** nif.xml says why: a
+`BSProceduralLightningController` is "paired with dummy TriShapes", empty shapes the
+engine generates lightning into at runtime, and the game's staff bolts, rune projectiles
+and shock explosions are built from them. Exporting nothing lost the shape, its shader
+and its alpha property — half the blocks in `explosionshock01.nif`.
+
+FBX has no mesh with no vertices worth writing; a DCC tool given one shows an object that
+cannot be selected. So it is a plain node carrying everything a shape carries except the
+mesh, marked `nif_empty_shape`. The mark is explicit rather than inferred from "a geometry
+class with no mesh attached", because that is also what an author typing a class name onto
+an ordinary node produces, and those are not the same thing. On the way back a
+`NiTriBasedGeom` still gets its data block, empty — the class keeps its vertices there and
+a null `Data` is not a shape the engine will load.
 
 #### 5.2.1 Shared property blocks
 
@@ -728,8 +790,17 @@ own fields ride across flat on the FBX material, as constraints and particle sys
 — `NifFieldCodec` with an `es_` prefix, alongside a `shader_block` property naming the
 class.
 
-Only an effect shader records `shader_block`; a lighting shader is what everything else
-rebuilds as, which keeps a scene authored in a DCC tool working unchanged.
+An effect shader was the first of these and is much the commonest, but it is not the only
+one. A `BSWaterShaderProperty` shares no more with a lighting shader than an effect shader
+does, and fell through the same gap ck-cmd's does — the export returned no material at
+all, so the shape came back with no shader. So the rule is **the one class the common
+material form covers**, not a list of the ones it does not: anything that is not a
+`BSLightingShaderProperty` rides flat, under its own name, and comes back as the class
+that was written. The class is checked against the schema, so a name this build does not
+know falls back to an effect shader rather than inserting whatever the property said.
+
+A lighting shader records no `shader_block` and is what everything else rebuilds as, which
+keeps a scene authored in a DCC tool working unchanged.
 
 The controller chain and extra data are not carried. An animated shader is animated
 through the sequences, which travel by their own route, and a carried link would point
@@ -1392,13 +1463,74 @@ Sequences are written to play **from zero**: where they sat on the source timeli
 not something the engine has a use for, so the length is `stop - start` and every key
 shifts by `-start`.
 
-### 5A.6 Known limits
+### 5A.6 What a track can hold besides keys
+
+Three things that are animation and have no keys. Each was dropped by a filter asking
+"does this track have keys", and each took the blocks that carried it down with it.
+
+**A constant scalar.** A `NiFloatInterpolator` or `NiBoolInterpolator` with no data block
+holds one value for the whole sequence — an effect's "loop" sequence hides a mesh
+outright, `Value` 0 and nothing else — and the "begin" sequence beside it keys the same
+property. Two sequences saying different things is exactly what animation is. It travels
+as a typed property on the **stack**, since a stack is the only per-take place FBX has;
+the model's resting value is one per model where this is one per take.
+
+**A constant transform.** A `NiTransformInterpolator` with no data block still carries a
+`Transform`, and that is the pose the node takes for the whole sequence. It travels the
+same way, as eight numbers on the stack (`constxf_<node>`), written as the quaternion the
+file holds rather than as a matrix so a file nobody edited comes back with the numbers it
+went out with.
+
+**The sentinel that means neither.** nif.xml calls the field "Pose value if lacking
+NiFloatData" and gives it a default that means *none*: `#INV_FLT#` for a float, `2` for a
+bool — a bool being 0 or 1 and never 2, and a transform component being `float.MinValue`.
+An interpolator with neither data nor a pose holds nothing, and reading the sentinel as a
+constant turns it into an animation that sets every float it drives to 3.4e38. So the
+sentinel has to be recognised the moment constants start being kept; the two changes are
+one change.
+
+#### A controller can drive two things
+
+`NiPSysEmitterCtlr` holds two interpolators, and nif.xml names them: `['BirthRate',
+'EmitterActive']`, "for `Interpolator` and `Visibility Interpolator` respectively". Those
+are the same spellings a `NiControlledBlock` puts in its `Interpolator ID`, so a
+controller read through a sequence and one read attached name the same track.
+
+Reading only the first lost every emitter's on/off track — and because a birth rate is
+usually one constant number, the track then looked empty and the whole controller went
+with it. Both halves are read, and on the way back **one controller is built per class
+and id**, with each track in the slot its `Interpolator ID` names. Where nothing named a
+slot — a scene authored in a DCC tool — a boolean track on a controller that has a
+visibility slot is what that slot is for.
+
+Properties share a controller only when the file said which controller they belong to. A
+shader carries several `BSEffectShaderPropertyFloatController`s, one fading and another
+scrolling, and nothing in a track tells them apart; grouping those by class alone
+rebuilds one where there were nine.
+
+#### Which controller is which
+
+nif.xml states per class what `NiInterpController::GetCtlrID()` returns, and it is not
+decoration:
+
+| Class | Id field |
+| --- | --- |
+| `NiPSysModifierCtlr` and below | `Modifier Name` |
+| `NiFloatExtraDataController` | `Extra Data Name` |
+
+A particle system carries several modifier controllers of the same class, one per
+modifier. With no id to tell them apart the import keys them all to one slot and rebuilds
+one controller where there were four, which halved the bool interpolators of every effect
+mesh with more than one emitter.
+
+### 5A.7 Known limits
 
 | Limit | Consequence |
 | --- | --- |
-| A track binds by node name | Duplicate names cannot be told apart, in either format |
-| A controller needs an interpolator to be recognised | One with none carries no animation, so this layer cannot see it. Where such a controller matters it travels with the structure instead — see §4.9A for particle systems |
+| A track binds by node name | Duplicate names cannot be told apart, in either format. A block with **no** name is bound by its class name instead, and the name itself travels as `nif_name` (§5.2.5) |
 | One layer per stack | Layered animation is not represented |
+| `NiPathInterpolator`, `NiLookAtInterpolator` | Neither drives a float, a boolean, a point or a transform, so this layer does not recognise them and the controllers holding them are lost. Three of the sampled meshes: a camera path, a fish |
+| A structural controller's own interpolators | `BSProceduralLightningController` holds nine, under names of its own. The flat carrier that brings the controller across carries fields, not references, so the interpolators and their data are lost |
 
 ---
 
@@ -1488,6 +1620,11 @@ half**; the visible half is never read back.
 
 | Property | On | Carries |
 | --- | --- | --- |
+| `nif_name` | node | A name FBX cannot carry as the object's own, which in practice means an empty one. Read as present-or-absent, not by value (§5.2.5) |
+| `nif_empty_shape` | node | This node is a shape with no vertices — a dummy TriShape a controller generates geometry into (§5.2.5) |
+| `particle_controllers`, `npc_<i>_*` | node | Controllers that animate nothing: a particle system's update switch, a skeleton's lag bone. Excludes anything a sequence names (§4.9A) |
+| `const_<node>\|<property>` | animation stack | A track holding one value for the whole take, typed so a boolean constant and a float one stay different (§5A.6) |
+| `constxf_<node>` | animation stack | A transform held for the whole take, as the quaternion the file holds (§5A.6) |
 | `nif_block_type` | node, geometry | The block class — `BSOrderedNode`, `BSLeafAnimNode`, `BSValueNode`, `BSMultiBoundNode`, `BSLODTriShape`, `BSDynamicTriShape`. Refused unless the schema knows it and it inherits the expected base |
 | `extra_data`, `xd_<i>_type`, `xd_<i>_name`, `xd_<i>_*` | node | Every `NiExtraData` block, field by field. `BSXFlags` is excluded: it is recalculated (§5.4.1) |
 | `multi_bound_type`, `mb_*`, `multi_bound_culling` | node | A `BSMultiBoundNode`'s culling volume, three blocks deep, plus a `<name>_multibound` mesh drawn for the artist (§5.2.2) |
@@ -1633,6 +1770,8 @@ Real gaps, each with its reason recorded where it bites.
 | --- | --- | --- |
 | A controller with no interpolator, outside a particle system | Not recognised as animation, and only particle systems carry these structurally so far | §5A.6, §4.9A |
 | Array order within a rebuilt convex hull | The vertices and planes agree, but arrive in the fit's order rather than Havok's, which nif.xml says is lexicographic | §5.7.1 |
+| A `NiPathInterpolator` or `NiLookAtInterpolator` | Neither drives a float, a boolean, a point or a transform, so the animation layer does not recognise them and the controller holding one is lost | §5A.7 |
+| A structural controller's own interpolators | `BSProceduralLightningController` holds nine under names of its own; the flat carrier moves fields, not references | §5A.7 |
 | The second and later materials of a multi-material render mesh | A NIF shape has one material, and the import keeps the first rather than splitting the mesh into one shape per material. Authoring means splitting it in the DCC tool | §5.3.4 |
 
 ---
