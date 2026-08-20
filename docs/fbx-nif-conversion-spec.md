@@ -597,6 +597,35 @@ sets every partition to `SBP_32_BODY` with `PF_EDITOR_VISIBLE | PF_START_NET_BON
 (L3100) in the branch that cannot run. This port wrote every slot as zero — the torso —
 until the slots were carried.
 
+#### 5.2.4 Which geometry class
+
+The two geometry families differ in where the vertices live, not merely in name. A
+`BSTriShape` packs them inline; everything under `NiTriBasedGeom` keeps them in a data
+block beside it. `BSLODTriShape` is in that **second** family despite its name.
+
+SE is `BSTriShape` country, and the exceptions are informative. Of the 21,587 vanilla SE
+meshes that hold geometry:
+
+| | Files |
+| --- | --- |
+| with `BSTriShape` | 17,900 |
+| with `BSDynamicTriShape` | 3,687 |
+| with `BSLODTriShape` | 34 |
+| with `NiTriShape` | **130** |
+| …of those, also holding `BSTriShape` | **130 — every one** |
+
+No SE file is wholly `NiTriShape`. It appears only *beside* `BSTriShape`, in plants,
+landscape and `_byoh` meshes, and the pattern inside a file gives it away:
+`floramushroom06.nif` holds `FloraMushroom06:5` as a `BSTriShape` and
+`FloraMushroom06_1:5` — the alternate variant — as a `NiTriShape`. These are shapes the
+SSE optimiser did not convert, not a class SE prefers for anything.
+
+So the class is **carried**, because reproducing a file means reproducing it, and 130
+vanilla meshes would otherwise be changed. But it is only carried: a scene with nothing
+to carry gets the class its edition wants, so geometry authored in a DCC tool becomes
+`BSTriShape` for SE and never inherits the anomaly. A `BSTriShape` carried into an LE
+build is refused, since the class does not exist there.
+
 #### 5.3.0 Skinned SE vertex data
 
 `BSTriShape` packs everything about a vertex inline, and for a skinned shape that

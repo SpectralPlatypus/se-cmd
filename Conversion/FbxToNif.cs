@@ -1103,11 +1103,11 @@ namespace SECmd.Conversion
             // is skinned before a single vertex is sized.
             SkinData? skin = FbxSkinIO.ReadSkin(_scene, geometry);
 
-            // BSTriShape does not exist before Skyrim SE, so the edition decides
-            // which geometry block to emit.
-            NifItem shape = _options.LegendaryEdition
-                ? BuildNiTriShape(geometry, mesh)
-                : BuildBsTriShape(geometry, mesh, skin is not null);
+            // Which geometry class this was, when the scene says. The edition only
+            // decides when it does not: SE files hold NiTriShape as freely as
+            // BSTriShape, so choosing by edition alone converts every shape in a file
+            // to whichever class the edition prefers.
+            NifItem shape = BuildGeometry(geometry, mesh, skin is not null);
 
             _model.SetTransform(shape, transform);
 
@@ -1266,9 +1266,42 @@ namespace SECmd.Conversion
             _pendingSkins.Clear();
         }
 
-        private NifItem BuildNiTriShape(FbxObject geometry, MeshGeometry mesh)
+        /// <summary>
+        /// Builds the geometry block this shape was, or the one its edition wants.
+        /// </summary>
+        /// <remarks>
+        /// The two families differ in where the vertices live, not merely in name.
+        /// A <c>BSTriShape</c> packs them inline; everything under
+        /// <c>NiTriBasedGeom</c> keeps them in a data block beside it — and
+        /// <c>BSLODTriShape</c> is in that second family despite its name, which is
+        /// why it was coming back as a <c>BSTriShape</c> with a stray
+        /// <c>NiTriShapeData</c> left over.
+        ///
+        /// `BSTriShape` does not exist before Skyrim SE, so a carried one is refused
+        /// when building for LE.
+        /// </remarks>
+        private NifItem BuildGeometry(FbxObject geometry, MeshGeometry mesh, bool skinned)
         {
-            NifItem shape = _model.InsertBlock("NiTriShape");
+            string carried = FbxNodeType.Read(geometry, _model, string.Empty, "NiAVObject");
+
+            if (carried.Length > 0 && _model.Database.Inherits(carried, "BSTriShape"))
+            {
+                return _options.LegendaryEdition
+                    ? BuildNiTriShape(geometry, mesh, "NiTriShape")
+                    : BuildBsTriShape(geometry, mesh, skinned);
+            }
+
+            if (carried.Length > 0 && _model.Database.Inherits(carried, "NiTriBasedGeom"))
+                return BuildNiTriShape(geometry, mesh, carried);
+
+            return _options.LegendaryEdition
+                ? BuildNiTriShape(geometry, mesh, "NiTriShape")
+                : BuildBsTriShape(geometry, mesh, skinned);
+        }
+
+        private NifItem BuildNiTriShape(FbxObject geometry, MeshGeometry mesh, string type)
+        {
+            NifItem shape = _model.InsertBlock(type);
             _model.SetString(shape, "Name", NameEncoding.Unsanitize(geometry.Name));
 
             NifItem data = _model.InsertBlock("NiTriShapeData");

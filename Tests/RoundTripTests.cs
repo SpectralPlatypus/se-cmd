@@ -158,6 +158,32 @@ namespace SECmd.Tests
             Assert.Contains(rebuilt.Blocks, b => b.Name == kind);
         }
 
+        [Theory]
+        [InlineData("nifly/TestNifFile_Static_SE.nif")]
+        [InlineData("multi_material_cube.nif")]
+        [InlineData("nifly/TestNifFile_Skinned_Dynamic_SE.nif")]
+        public void GeometryKeepsItsClass(string name)
+        {
+            // The two geometry families differ in where the vertices live, not merely
+            // in name: a BSTriShape packs them inline, everything under NiTriBasedGeom
+            // keeps them in a data block beside it. Choosing by edition alone converts
+            // every shape in a file to whichever class the edition prefers, and an SE
+            // file holds NiTriShape as freely as BSTriShape.
+            NifModel source = Load(name);
+
+            var expected = source.Blocks
+                .Where(b => source.BlockInherits(b, "NiTriBasedGeom") || source.BlockInherits(b, "BSTriShape"))
+                .GroupBy(b => b.Name)
+                .ToDictionary(g => g.Key, g => g.Count());
+
+            Assert.NotEmpty(expected);
+
+            NifModel rebuilt = RoundTrip(source);
+
+            foreach ((string type, int count) in expected)
+                Assert.Equal(count, rebuilt.Blocks.Count(b => b.Name == type));
+        }
+
         [Fact]
         public void AnSeShapeKeepsItsVertexLayoutAndGainsTangents()
         {
