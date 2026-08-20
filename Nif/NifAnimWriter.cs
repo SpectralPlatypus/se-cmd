@@ -177,8 +177,10 @@ namespace SECmd.Nif
                 model.FindItem(controller, "Frequency")?.Value.SetFloat(1f);
                 model.FindItem(controller, "Phase")?.Value.SetFloat(0f);
 
-                if (property.ControllerId.Length > 0)
-                    model.SetString(controller, "Extra Data Name", property.ControllerId);
+                // Which of several same-typed controllers this is. nif.xml states
+                // the field per class as GetCtlrID(): a particle modifier controller
+                // finds its modifier by name, an extra-data controller its data.
+                WriteControllerId(model, controller, property.ControllerId);
 
                 Attach(model, host, controller);
 
@@ -206,10 +208,7 @@ namespace SECmd.Nif
         /// </remarks>
         private static void BlendInto(NifModel model, NifItem controller, AnimProperty property)
         {
-            bool visibility = property.IsBoolean
-                && model.FindItem(controller, "Visibility Interpolator") is not null;
-
-            string field = visibility ? "Visibility Interpolator" : "Interpolator";
+            string field = SlotFor(model, controller, property);
 
             if (model.GetRef(controller, field) is not null)
                 return;
@@ -224,6 +223,37 @@ namespace SECmd.Nif
             if (model.KnowsBlock(blend))
                 model.SetRef(controller, field, model.InsertBlock(blend));
         }
+
+        /// <summary>
+        /// Which of a controller's interpolator slots a track belongs in.
+        /// </summary>
+        /// <remarks>
+        /// The track says so itself when it came from a file that said so: nif.xml
+        /// spells `NiPSysEmitterCtlr`'s two as <c>['BirthRate', 'EmitterActive']</c>,
+        /// for `Interpolator` and `Visibility Interpolator` respectively, and both a
+        /// sequence's `Interpolator ID` and the attached-controller reader carry that
+        /// spelling across.
+        ///
+        /// Where it does not — a scene authored in a DCC tool, where nothing named the
+        /// slot — a boolean track on a controller that has a visibility slot is what
+        /// that slot is for.
+        /// </remarks>
+        private static string SlotFor(NifModel model, NifItem controller, AnimProperty property)
+        {
+            if (model.FindItem(controller, "Visibility Interpolator") is null)
+                return "Interpolator";
+
+            if (property.InterpolatorId == EmitterActiveId)
+                return "Visibility Interpolator";
+
+            if (property.InterpolatorId.Length > 0)
+                return "Interpolator";
+
+            return property.IsBoolean ? "Visibility Interpolator" : "Interpolator";
+        }
+
+        /// <summary>nif.xml's spelling for the visibility half of an emitter controller.</summary>
+        private const string EmitterActiveId = "EmitterActive";
 
         /// <summary>
         /// Puts property animation back where it was: on the thing it controls.
@@ -260,15 +290,23 @@ namespace SECmd.Nif
                 if (track.Curves.Any(c => c.HasKeys))
                     WriteTransformController(model, node, track);
 
-                foreach (AnimProperty property in track.Properties)
+                // One controller per class and id, not per track. A controller can
+                // drive two values at once -- an emitter's birth rate and whether it
+                // is emitting at all -- and building one per property left the second
+                // as a duplicate controller of the same class, fighting the first.
+                foreach (var group in track.Properties
+                             .Where(Carries)
+                             .Select((Property, Index) => (Property, Index))
+                             .GroupBy(p => GroupKey(p.Property, p.Index))
+                             .Select(g => g.Select(p => p.Property).ToList()))
                 {
-                    if (!property.Curves.Any(c => c.HasKeys) || property.ControllerType.Length == 0)
-                        continue;
+                    string type = group[0].ControllerType;
+                    string id = group[0].ControllerId;
 
-                    if (!model.KnowsBlock(property.ControllerType))
+                    if (!model.KnowsBlock(type))
                     {
                         warnings.Add(
-                            $"{track.NodeName}: {property.ControllerType} is not a block this build knows, "
+                            $"{track.NodeName}: {type} is not a block this build knows, "
                             + "its animation is dropped");
 
                         continue;
@@ -281,13 +319,24 @@ namespace SECmd.Nif
                     // second would leave two fighting over one property, so the search
                     // covers every chain the node has rather than the one this would
                     // have picked.
-                    (NifItem host, NifItem? found) = FindController(model, node, property.ControllerType);
+                    (NifItem host, NifItem? found) = FindController(model, node, type, id);
 
                     bool existing = found is not null;
-                    NifItem controller = found ?? model.InsertBlock(property.ControllerType);
+                    NifItem controller = found ?? model.InsertBlock(type);
 
-                    model.SetRef(controller, "Interpolator", WriteValueInterpolator(model, property, 0f));
                     model.SetRef(controller, "Target", host);
+
+                    // Which of several same-typed controllers this is has to be set
+                    // before the slots are filled: the search above reads it back.
+                    WriteControllerId(model, controller, id);
+
+                    foreach (AnimProperty property in group)
+                    {
+                        model.SetRef(
+                            controller,
+                            SlotFor(model, controller, property),
+                            WriteValueInterpolator(model, property, 0f));
+                    }
 
                     if (!existing)
                     {
@@ -295,17 +344,17 @@ namespace SECmd.Nif
                         model.FindItem(controller, "Frequency")?.Value.SetFloat(1f);
                         model.FindItem(controller, "Phase")?.Value.SetFloat(0f);
                     }
+
                     // The controller's own span is the span of the keys it holds; a
                     // bare controller has no sequence to take one from.
-                    var times = property.Curves.SelectMany(c => c.Keys).Select(k => k.Time).ToList();
+                    var times = group
+                        .SelectMany(p => p.Curves)
+                        .SelectMany(c => c.Keys)
+                        .Select(k => k.Time)
+                        .ToList();
 
                     model.FindItem(controller, "Start Time")?.Value.SetFloat(times.Count > 0 ? times.Min() : 0f);
                     model.FindItem(controller, "Stop Time")?.Value.SetFloat(times.Count > 0 ? times.Max() : 0f);
-
-                    // An extra data controller names its target through the extra
-                    // data's name rather than through a field of its own.
-                    if (property.ControllerId.Length > 0)
-                        model.SetString(controller, "Extra Data Name", property.ControllerId);
 
                     if (!existing)
                         Attach(model, host, controller);
@@ -344,6 +393,59 @@ namespace SECmd.Nif
             Attach(model, node, controller);
         }
 
+        /// <summary>
+        /// Which controller a track's property belongs to.
+        /// </summary>
+        /// <remarks>
+        /// Two properties share a controller only when the file said which controller
+        /// they belong to — an id naming the modifier, or a slot naming which of the
+        /// controller's two values this is. `NiPSysEmitterCtlr`'s `BirthRate` and
+        /// `EmitterActive` say both, and belong together.
+        ///
+        /// Where neither is said, each property gets its own. A shader can carry
+        /// several `BSEffectShaderPropertyFloatController`s — one fading, another
+        /// scrolling — and nothing in a track distinguishes them, so grouping them by
+        /// class alone would rebuild one where there were nine.
+        /// </remarks>
+        private static (string Type, string Id, int Ordinal) GroupKey(AnimProperty property, int index) =>
+            property.ControllerId.Length > 0 || property.InterpolatorId.Length > 0
+                ? (property.ControllerType, property.ControllerId, -1)
+                : (property.ControllerType, property.ControllerId, index);
+
+        /// <summary>
+        /// Whether a track's property says enough to rebuild a controller from.
+        /// </summary>
+        /// <remarks>
+        /// A constant counts. It holds one value for the whole sequence rather than
+        /// none — the next sequence can say something else — and treating it as
+        /// nothing dropped the controller that held it, along with its other
+        /// interpolator and that one's keys.
+        /// </remarks>
+        private static bool Carries(AnimProperty property) =>
+            property.ControllerType.Length > 0
+            && (property.Curves.Any(c => c.HasKeys) || property.Constant is not null);
+
+        /// <summary>
+        /// Records which of several same-typed controllers on a target this one is.
+        /// </summary>
+        /// <remarks>
+        /// nif.xml states the field per class, as what
+        /// <c>NiInterpController::GetCtlrID()</c> returns: a particle modifier
+        /// controller finds its modifier by name, an extra-data controller its data.
+        /// </remarks>
+        private static void WriteControllerId(NifModel model, NifItem controller, string id)
+        {
+            if (id.Length == 0)
+                return;
+
+            string field = model.FindItem(controller, "Modifier Name") is not null
+                ? "Modifier Name"
+                : "Extra Data Name";
+
+            if (model.FindItem(controller, field) is not null)
+                model.SetString(controller, field, id);
+        }
+
         /// <summary>Active, and playing forwards on a loop, which is what a bare controller does.</summary>
         private const uint StandaloneControllerFlags = 0x000C;
 
@@ -373,7 +475,7 @@ namespace SECmd.Nif
         /// The host to hang it from, and the controller if one is already there.
         /// </returns>
         private static (NifItem Host, NifItem? Controller) FindController(
-            NifModel model, NifItem node, string type)
+            NifModel model, NifItem node, string type, string id = "")
         {
             foreach (NifItem host in NifAnimAccess.ControllerHosts(model, node))
             {
@@ -381,18 +483,36 @@ namespace SECmd.Nif
                      controller is not null;
                      controller = model.GetRef(controller, "Next Controller"))
                 {
+                    if (controller.Name != type)
+                        continue;
+
+                    // A particle system carries several modifier controllers of the
+                    // same class, one per modifier, and they are told apart by the id
+                    // nif.xml gives the class. Matching on class alone gave them all
+                    // the first controller's keys.
+                    if (id.Length > 0 && IdOf(model, controller) != id)
+                        continue;
+
                     // Only one still waiting for its keys. A carrier that rebuilt a
                     // controller without an interpolator left it for this; one that
                     // already has an interpolator is a different controller that
                     // happens to share a class, and a shader can easily carry several
                     // -- one scrolling U, another scrolling V.
-                    if (controller.Name == type && model.GetRef(controller, "Interpolator") is null)
+                    if (model.GetRef(controller, "Interpolator") is null)
                         return (host, controller);
                 }
             }
 
             return (HostFor(model, node, type), null);
         }
+
+        /// <summary>The id a controller records, in whichever field its class uses.</summary>
+        private static string IdOf(NifModel model, NifItem controller) =>
+            model.FindItem(controller, "Modifier Name") is not null
+                ? model.GetString(controller, "Modifier Name")
+                : model.FindItem(controller, "Extra Data Name") is not null
+                    ? model.GetString(controller, "Extra Data Name")
+                    : string.Empty;
 
         /// <summary>Adds a controller to the end of a host's chain.</summary>
         /// <remarks>

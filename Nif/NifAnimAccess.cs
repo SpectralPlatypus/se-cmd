@@ -115,13 +115,20 @@ namespace SECmd.Nif
                             continue;
                         }
 
-                        if (ReadStandaloneController(model, controller) is { } property)
+                        foreach (AnimProperty property in ReadStandaloneController(model, controller))
                             TrackFor(tracks, name).Properties.Add(property);
                     }
                 }
             }
 
-            var keyed = tracks.Values.Where(t => t.HasKeys).ToList();
+            // A track whose properties are all constant still has something to say.
+            // An emitter whose birth rate is one number for the whole sequence is
+            // animation -- the next sequence can say a different number -- and
+            // dropping it here took the controller, its interpolators and their data
+            // with it, since nothing else carries an attached controller.
+            var keyed = tracks.Values
+                .Where(t => t.HasKeys || t.Properties.Any(p => p.Constant is not null))
+                .ToList();
 
             if (keyed.Count == 0)
                 return;
@@ -150,7 +157,7 @@ namespace SECmd.Nif
         }
 
         /// <summary>
-        /// One attached controller, or null when it is not a kind this reads.
+        /// The named values one attached controller drives, which may be none.
         /// </summary>
         /// <remarks>
         /// Judged by its interpolator, as a controlled block is (see
@@ -158,38 +165,87 @@ namespace SECmd.Nif
         /// a point is a named scalar or colour, whatever the controller class is
         /// called. Transform controllers are left alone, since they move the node
         /// rather than name something on it.
+        ///
+        /// A controller can drive **two** values. `NiPSysEmitterCtlr` holds a second
+        /// interpolator in `Visibility Interpolator`, and reading only the first lost
+        /// every emitter's on/off track — and, because the track then had no keys, the
+        /// controller with it.
         /// </remarks>
-        private static AnimProperty? ReadStandaloneController(NifModel model, NifItem controller)
+        private static IEnumerable<AnimProperty> ReadStandaloneController(
+            NifModel model, NifItem controller)
         {
-            bool visibility = model.BlockInherits(controller, "NiVisController");
-            bool extraData = model.BlockInherits(controller, "NiFloatExtraDataController");
+            string id = ControllerIdOf(model, controller);
 
-            if (model.GetRef(controller, "Interpolator") is not { } interpolator)
-                return null;
-
-            bool colour = model.BlockInherits(interpolator, "NiPoint3Interpolator");
-
-            if (!colour
-                && !model.BlockInherits(interpolator, "NiFloatInterpolator")
-                && !model.BlockInherits(interpolator, "NiBoolInterpolator"))
+            foreach ((string field, string interpolatorId) in InterpolatorSlots(model, controller))
             {
-                return null;
+                if (model.GetRef(controller, field) is not { } interpolator)
+                    continue;
+
+                bool colour = model.BlockInherits(interpolator, "NiPoint3Interpolator");
+                bool boolean = model.BlockInherits(interpolator, "NiBoolInterpolator");
+
+                if (!colour && !boolean && !model.BlockInherits(interpolator, "NiFloatInterpolator"))
+                    continue;
+
+                var property = new AnimProperty(colour ? 3 : 1)
+                {
+                    Name = AnimProperty.ToPropertyName(controller.Name, id, interpolatorId, string.Empty),
+                    IsBoolean = boolean,
+                    ControllerType = controller.Name,
+                    InterpolatorType = interpolator.Name,
+                    ControllerId = id,
+                    InterpolatorId = interpolatorId
+                };
+
+                if (ReadValueKeys(model, interpolator, property))
+                    yield return property;
+            }
+        }
+
+        /// <summary>
+        /// Which of several same-typed controllers on a target this one is.
+        /// </summary>
+        /// <remarks>
+        /// nif.xml states the rule per class, as the string
+        /// <c>NiInterpController::GetCtlrID()</c> returns: for a
+        /// <c>NiPSysModifierCtlr</c> it is the <c>Modifier Name</c>, for a
+        /// <c>NiFloatExtraDataController</c> the <c>Extra Data Name</c>.
+        ///
+        /// It is not decoration. A particle system carries several modifier
+        /// controllers of the same class, and with no id to tell them apart the import
+        /// keys them all to one slot and rebuilds one controller where there were
+        /// four — which is what halved the bool interpolators of every effect mesh
+        /// that has more than one emitter.
+        /// </remarks>
+        private static string ControllerIdOf(NifModel model, NifItem controller)
+        {
+            if (model.BlockInherits(controller, "NiFloatExtraDataController"))
+                return model.GetString(controller, "Extra Data Name");
+
+            return model.BlockInherits(controller, "NiPSysModifierCtlr")
+                ? model.GetString(controller, "Modifier Name")
+                : string.Empty;
+        }
+
+        /// <summary>The interpolator fields a controller holds, and what each drives.</summary>
+        /// <remarks>
+        /// nif.xml names the pair outright for the one class that has two:
+        /// <c>NiPSysEmitterCtlr</c>'s are <c>['BirthRate', 'EmitterActive']</c>, "for
+        /// `Interpolator` and `Visibility Interpolator` respectively". Those are the
+        /// same spellings a <c>NiControlledBlock</c> uses in its `Interpolator ID`, so
+        /// a controller read here and one read through a sequence name the same track.
+        /// </remarks>
+        private static IEnumerable<(string Field, string InterpolatorId)> InterpolatorSlots(
+            NifModel model, NifItem controller)
+        {
+            if (model.FindItem(controller, "Visibility Interpolator") is null)
+            {
+                yield return ("Interpolator", string.Empty);
+                yield break;
             }
 
-            // An extra data controller names its target through the extra data's own
-            // name, which is also the id a sequence would identify it by.
-            string id = extraData ? model.GetString(controller, "Extra Data Name") : string.Empty;
-
-            var property = new AnimProperty(colour ? 3 : 1)
-            {
-                Name = AnimProperty.ToPropertyName(controller.Name, id, string.Empty, string.Empty),
-                IsBoolean = visibility,
-                ControllerType = controller.Name,
-                InterpolatorType = interpolator.Name,
-                ControllerId = id
-            };
-
-            return ReadValueKeys(model, interpolator, property) ? property : null;
+            yield return ("Interpolator", "BirthRate");
+            yield return ("Visibility Interpolator", "EmitterActive");
         }
 
         /// <summary>One sequence, or null when it animates nothing this reads.</summary>
