@@ -109,9 +109,7 @@ namespace SECmd.Nif
                         if (model.GetRef(controller, "Interpolator") is { } interpolator
                             && model.BlockInherits(interpolator, "NiTransformInterpolator"))
                         {
-                            if (model.GetRef(interpolator, "Data") is { } data)
-                                ReadTransformTrack(model, data, TrackFor(tracks, name));
-
+                            ReadTransform(model, interpolator, TrackFor(tracks, name));
                             continue;
                         }
 
@@ -302,9 +300,7 @@ namespace SECmd.Nif
 
             if (model.BlockInherits(interpolator, "NiTransformInterpolator"))
             {
-                if (model.GetRef(interpolator, "Data") is { } data)
-                    ReadTransformTrack(model, data, TrackFor(tracks, name));
-
+                ReadTransform(model, interpolator, TrackFor(tracks, name));
                 return;
             }
 
@@ -331,6 +327,34 @@ namespace SECmd.Nif
 
             if (ReadValueKeys(model, interpolator, property))
                 TrackFor(tracks, name).Properties.Add(property);
+        }
+
+        /// <summary>
+        /// Reads a transform interpolator, keyed or posed.
+        /// </summary>
+        /// <remarks>
+        /// One with no data block is not empty: its own <c>Transform</c> is the pose
+        /// the node holds for the whole sequence. Reading only the data block lost
+        /// every such controller — the track came out with no keys and was discarded,
+        /// and nothing else in the file carries a transform controller.
+        /// </remarks>
+        private static void ReadTransform(NifModel model, NifItem interpolator, AnimTrack track)
+        {
+            if (model.GetRef(interpolator, "Data") is { } data)
+            {
+                ReadTransformTrack(model, data, track);
+                return;
+            }
+
+            var pose = new AnimPose(
+                model.FindItem(interpolator, @"Transform\Translation")?.Value.Get<NifVector3>()
+                    ?? new NifVector3(),
+                model.FindItem(interpolator, @"Transform\Rotation")?.Value.Get<NifQuat>()
+                    ?? new NifQuat(),
+                model.FindItem(interpolator, @"Transform\Scale")?.Value.ToFloat() ?? 1f);
+
+            if (!pose.IsEmpty)
+                track.Pose = pose;
         }
 
         private static AnimTrack TrackFor(Dictionary<string, AnimTrack> tracks, string name)

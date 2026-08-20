@@ -286,8 +286,10 @@ namespace SECmd.Nif
                 }
 
                 // A track with curves of its own moves the node, which is a transform
-                // controller attached to it rather than anything a sequence names.
-                if (track.Curves.Any(c => c.HasKeys))
+                // controller attached to it rather than anything a sequence names. A
+                // track that only poses it is the same controller holding a
+                // data-less interpolator.
+                if (track.Curves.Any(c => c.HasKeys) || track.Pose is not null)
                     WriteTransformController(model, node, track);
 
                 // One controller per class and id, not per track. A controller can
@@ -614,7 +616,9 @@ namespace SECmd.Nif
 
             foreach ((AnimTrack track, NifItem node) in tracks)
             {
-                if (track.Curves.Any(c => c.HasKeys))
+                // Keys, or a pose held for the whole sequence -- both are the node's
+                // own transform rather than a property of it.
+                if (track.Curves.Any(c => c.HasKeys) || track.Pose is not null)
                     entries.Add((track, node, null));
 
                 foreach (AnimProperty property in track.Properties.Where(
@@ -801,26 +805,43 @@ namespace SECmd.Nif
 
         private static NifItem WriteInterpolator(NifModel model, AnimTrack track, float offset)
         {
+            NifItem interpolator = model.InsertBlock("NiTransformInterpolator");
+
+            // A track with no keys holds a pose instead: the transform the node takes
+            // for the whole sequence, in the interpolator's own Transform, with no
+            // data block at all. That absence is the representation.
+            if (!track.HasKeys && track.Pose is { } pose)
+            {
+                WriteTransform(model, interpolator, pose.Translation, pose.Rotation, pose.Scale);
+                return interpolator;
+            }
+
             NifItem data = model.InsertBlock("NiTransformData");
 
             WriteTranslations(model, data, track, offset);
             WriteRotations(model, data, track, offset);
             WriteScales(model, data, track, offset);
 
-            NifItem interpolator = model.InsertBlock("NiTransformInterpolator");
             model.SetRef(interpolator, "Data", data);
 
             // The base transform is left unset so the node's own is used for whatever
             // the keys do not drive.
-            model.FindItem(interpolator, @"Transform\Translation")?.Value
-                .Set(new NifVector3(UnsetTransform, UnsetTransform, UnsetTransform));
-
-            model.FindItem(interpolator, @"Transform\Rotation")?.Value
-                .Set(new NifQuat(UnsetTransform, UnsetTransform, UnsetTransform, UnsetTransform));
-
-            model.FindItem(interpolator, @"Transform\Scale")?.Value.SetFloat(UnsetTransform);
+            WriteTransform(
+                model, interpolator,
+                new NifVector3(UnsetTransform, UnsetTransform, UnsetTransform),
+                new NifQuat(UnsetTransform, UnsetTransform, UnsetTransform, UnsetTransform),
+                UnsetTransform);
 
             return interpolator;
+        }
+
+        /// <summary>Fills an interpolator's own transform.</summary>
+        private static void WriteTransform(
+            NifModel model, NifItem interpolator, NifVector3 translation, NifQuat rotation, float scale)
+        {
+            model.FindItem(interpolator, @"Transform\Translation")?.Value.Set(translation);
+            model.FindItem(interpolator, @"Transform\Rotation")?.Value.Set(rotation);
+            model.FindItem(interpolator, @"Transform\Scale")?.Value.SetFloat(scale);
         }
 
         private static void WriteTranslations(NifModel model, NifItem data, AnimTrack track, float offset)

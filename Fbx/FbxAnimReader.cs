@@ -1,3 +1,4 @@
+using SECmd.Nif;
 using MeshIO.Formats.Fbx;
 using SECmd.Conversion;
 
@@ -89,6 +90,47 @@ namespace SECmd.Fbx
             }
         }
 
+        /// <summary>Reads the tracks that hold one transform for the whole take.</summary>
+        /// <remarks>See <see cref="FbxAnimWriter.AddPose"/>.</remarks>
+        private static void ReadPoses(FbxObject stack, Dictionary<string, AnimTrack> tracks)
+        {
+            foreach (FbxProperty70 property in stack.Properties.All)
+            {
+                if (!property.Name.StartsWith(FbxAnimWriter.PosePrefix, StringComparison.Ordinal))
+                    continue;
+
+                string nodeName = property.Name[FbxAnimWriter.PosePrefix.Length..];
+                string[] parts = (property.Values.FirstOrDefault()?.ToString() ?? string.Empty)
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+                if (parts.Length != 8)
+                    continue;
+
+                var numbers = new float[8];
+                bool ok = true;
+
+                for (int i = 0; i < 8 && ok; i++)
+                {
+                    ok = float.TryParse(
+                        parts[i],
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out numbers[i]);
+                }
+
+                if (!ok)
+                    continue;
+
+                if (!tracks.TryGetValue(nodeName, out AnimTrack? track))
+                    tracks[nodeName] = track = new AnimTrack { NodeName = nodeName };
+
+                track.Pose = new AnimPose(
+                    new NifVector3(numbers[0], numbers[1], numbers[2]),
+                    new NifQuat(numbers[3], numbers[4], numbers[5], numbers[6]),
+                    numbers[7]);
+            }
+        }
+
         /// <summary>
         /// Puts each track's interpolator class back.
         /// </summary>
@@ -137,6 +179,7 @@ namespace SECmd.Fbx
             }
 
             ReadConstants(stack, tracks);
+            ReadPoses(stack, tracks);
             ReadInterpolatorTypes(stack, tracks);
 
             // A track with no keys is kept only when it holds a constant, which is an

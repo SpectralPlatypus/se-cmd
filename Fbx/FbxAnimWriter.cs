@@ -1,3 +1,4 @@
+using SECmd.Nif;
 using MeshIO.Formats.Fbx;
 using SECmd.Conversion;
 
@@ -86,6 +87,8 @@ namespace SECmd.Fbx
                     continue;
                 }
 
+                AddPose(stack, track);
+
                 AddChannel(scene, layer, model, "T", "Lcl Translation", track.Translation);
                 AddChannel(scene, layer, model, "R", "Lcl Rotation", track.Rotation);
                 AddChannel(scene, layer, model, "S", "Lcl Scaling", track.Scale);
@@ -106,6 +109,41 @@ namespace SECmd.Fbx
 
         /// <summary>Prefix on a stack property holding a track's constant value.</summary>
         public const string ConstantPrefix = "const_";
+
+        /// <summary>Prefix on a stack property holding a track's fixed transform.</summary>
+        public const string PosePrefix = "constxf_";
+
+        /// <summary>
+        /// Records a track that holds one transform for the whole sequence.
+        /// </summary>
+        /// <remarks>
+        /// A <c>NiTransformInterpolator</c> with no data block holds a pose rather
+        /// than keys, and it goes where a constant scalar goes: on the stack, the only
+        /// per-take place FBX has. It cannot be the model's own transform — that is
+        /// one per model where this is one per take, and two sequences can pose the
+        /// same node differently.
+        ///
+        /// Written as the numbers the file holds, a quaternion and not a matrix, so
+        /// that a file nobody edited comes back with the numbers it went out with.
+        /// </remarks>
+        private static void AddPose(FbxObject stack, AnimTrack track)
+        {
+            if (track.Pose is not { } pose)
+                return;
+
+            float[] parts =
+            [
+                pose.Translation.X, pose.Translation.Y, pose.Translation.Z,
+                pose.Rotation.W, pose.Rotation.X, pose.Rotation.Y, pose.Rotation.Z,
+                pose.Scale
+            ];
+
+            stack.Properties.SetUserString(
+                $"{PosePrefix}{track.NodeName}",
+                string.Join(
+                    ' ',
+                    parts.Select(p => p.ToString("R", System.Globalization.CultureInfo.InvariantCulture))));
+        }
 
         /// <summary>Prefix on a stack property naming a track's interpolator class.</summary>
         /// <remarks>

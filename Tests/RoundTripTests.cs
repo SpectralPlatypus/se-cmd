@@ -838,6 +838,61 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void ATransformHeldForAWholeSequenceComesBack()
+        {
+            // A NiTransformInterpolator with no data block is not empty. Its own
+            // Transform is the pose the node takes for the whole sequence -- the
+            // transform equivalent of a constant scalar -- and reading only the data
+            // block lost the interpolator and the controller that held it.
+            NifModel model = NifModel.CreateNew(Db, bsVersion: 100);
+
+            NifItem root = model.InsertBlock("NiNode");
+            model.SetString(root, "Name", "root");
+
+            NifItem node = model.InsertBlock("NiNode");
+            model.SetString(node, "Name", "Gem");
+
+            if (model.SetArraySize(root, "Num Children", "Children", 1) is { } children)
+                children.Children[0].Value.SetLink(model.IndexOf(node));
+
+            NifItem controller = model.InsertBlock("NiTransformController");
+            NifItem interpolator = model.InsertBlock("NiTransformInterpolator");
+
+            var translation = new NifVector3(1.5f, -2.25f, 3f);
+            var rotation = new NifQuat(0.5f, 0.5f, 0.5f, 0.5f);
+
+            model.FindItem(interpolator, @"Transform\Translation")!.Value.Set(translation);
+            model.FindItem(interpolator, @"Transform\Rotation")!.Value.Set(rotation);
+            model.FindItem(interpolator, @"Transform\Scale")!.Value.SetFloat(2f);
+
+            model.SetRef(controller, "Interpolator", interpolator);
+            model.SetRef(controller, "Target", node);
+            model.SetRef(node, "Controller", controller);
+
+            model.SetRoots([root]);
+
+            NifModel rebuilt = RoundTrip(model);
+
+            NifItem after = Assert.Single(rebuilt.Blocks, b => b.Name == "NiTransformInterpolator");
+
+            // No data block: the absence is the representation, and a one-key block
+            // instead would be a different animation that happens to look the same.
+            Assert.Null(rebuilt.GetRef(after, "Data"));
+
+            NifVector3 backT = rebuilt.FindItem(after, @"Transform\Translation")!.Value.Get<NifVector3>();
+            NifQuat backR = rebuilt.FindItem(after, @"Transform\Rotation")!.Value.Get<NifQuat>();
+
+            Assert.Equal(translation.X, backT.X, 4);
+            Assert.Equal(translation.Y, backT.Y, 4);
+            Assert.Equal(translation.Z, backT.Z, 4);
+            Assert.Equal(rotation.W, backR.W, 4);
+            Assert.Equal(rotation.X, backR.X, 4);
+            Assert.Equal(2f, rebuilt.FindItem(after, @"Transform\Scale")!.Value.ToFloat(), 4);
+
+            Assert.Single(rebuilt.Blocks, b => b.Name == "NiTransformController");
+        }
+
+        [Fact]
         public void ANodeKeepsAControllerThatAnimatesNothing()
         {
             // The same case as a particle system's update switch, on an ordinary node.
