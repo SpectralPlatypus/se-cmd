@@ -1693,6 +1693,214 @@ block.
 
 ---
 
+## 5D. Authoring a NIF from scratch, in a DCC tool
+
+Every section before this one describes a round trip: a NIF goes out, an FBX comes back,
+and the carriers exist so that nothing is lost in between. This section reads the same
+machinery the other way round. It is the list of what an author can **type into a DCC
+tool** to get a specific NIF block or field out, with no NIF to have started from.
+
+Two mechanisms carry everything: a **node's name**, and **custom properties** (FBX calls
+them user-defined properties; Blender calls them custom properties, 3ds Max calls them
+user-defined properties in the object properties dialog). Both are plain text and both
+survive every exporter worth using. Where a value is a number it is still written as
+text; the codec parses it in the invariant culture, so `1.5` and never `1,5`.
+
+Nothing here is required. A scene with none of it still converts — that is the point of
+the defaults — and each property below only changes what it names.
+
+### 5D.1 What kind of block a node becomes
+
+| Property | On | Value | Effect |
+| --- | --- | --- | --- |
+| `nif_block_type` | node | Any `NiAVObject` class | The node becomes that class instead of `NiNode`: `BSFadeNode`, `BSOrderedNode`, `BSLeafAnimNode`, `BSValueNode`, `BSMultiBoundNode`, `NiBillboardNode`, `NiCamera`. Refused if the schema does not know it or it is not a `NiAVObject` (§5.2.5) |
+| `nif_block_type` | mesh geometry | A geometry class | `BSTriShape`, `BSDynamicTriShape`, `BSLODTriShape`, `NiTriShape`. Refused for LE builds when the class does not exist there (§5.2.4) |
+| `dynamic_vertex_w` | mesh geometry | A number | The fourth component of a `BSDynamicTriShape`'s vertices, which the static vertex buffer has nowhere to hold |
+| `nif_own_<field>` | node, geometry | Text | Any field the named class adds to its base. `nif_own_alpha_sort_bound` on a `BSOrderedNode`, `nif_own_value` on a `BSValueNode`. Field names are lowercased with spaces as underscores |
+| `nif_name` | node | Usually empty | The block's `Name`, when it cannot be the FBX object's own — in practice only for a block that has **no** name, which the game's cameras have. Present-but-empty is the whole signal (§5.2.5) |
+| `nif_empty_shape` | node | Any non-empty value | This node is a shape with no vertices — a dummy TriShape a `BSProceduralLightningController` generates geometry into. It carries a shader and an alpha property like any shape and has no mesh (§5.2.5) |
+
+Without `nif_block_type` a node becomes a `NiNode` and a mesh becomes the geometry class
+the target edition uses — `BSTriShape` for SE, `NiTriShape` for LE. That is the right
+answer for almost everything, which is why the property is not required.
+
+### 5D.2 Collision
+
+Collision is authored as **child nodes whose names carry a suffix**, not as properties.
+The shape is read from the mesh under the node: a box node is fitted to a box, a sphere
+node to a sphere, a convex node to a hull. Nest the suffixes to nest the shapes.
+
+| Name suffix | Becomes |
+| --- | --- |
+| `_rb` | `bhkCollisionObject` + `bhkRigidBody` — the body everything below hangs from |
+| `_sp` | `bhkSPCollisionObject` — a simple shape phantom |
+| `_box`, `_sphere`, `_capsule`, `_convex`, `_mesh` | The leaf shape, fitted to the mesh under it |
+| `_transform`, `_list`, `_convex_list`, `_mopp` | A container; recurse into its children |
+| `_geometry` | The mesh attribute of a collision node, not a shape of its own |
+| `_con_`, `_attach_point` | A constraint and its attach point |
+| `_multibound` | A mesh drawn for a culling volume; skipped on import (§5.2.2) |
+
+| Property | On | Effect |
+| --- | --- | --- |
+| `nif_collision_type` | collision node | The collision-object class, when it is not the default for the suffix |
+| `nif_body_type` | collision node | `bhkRigidBody` or `bhkRigidBodyT` — whether the body carries its own transform |
+| `nif_collision_flags` | collision node | The collision object's flags word |
+| `nif_blend_heir_gain`, `nif_blend_vel_gain` | collision node | A `bhkBlendCollisionObject`'s two gains, which is what makes a file a skeleton |
+| `nif_rb_mass` | collision node | The body's mass. **Ignored for a static body**, which is always massless (§5.7.2) |
+| `nif_rb_layer` | collision node | The collision filter's layer, default `SKYL_STATIC` |
+| `hkc_<field>` | constraint node | Any field of the constraint, flat |
+| `constraint_type`, `constraint_wrapper` | constraint node | Which constraint class, and its wrapper |
+
+**The Havok material is an FBX material**, named after nif.xml's `SkyrimHavokMaterial`
+enum — `SKY_HAV_MAT_WOOD`, `SKY_HAV_MAT_STONE` — with a `CollisionLayer` string property
+on the same material. A name the enum does not know leaves the default and warns; it is
+the one unrecognised material that is reported rather than passed over (§5.3.4).
+
+**The inertia tensor is calculated, never authored.** So is the shape's radius, and the
+mass of a static. Typing them would be typing something the import overwrites (§5.7.2).
+
+### 5D.3 Skinning and body parts
+
+| Property | On | Effect |
+| --- | --- | --- |
+| `nif_skin_instance` | mesh geometry | `NiSkinInstance` or `BSDismemberSkinInstance`. Absent, the class follows whether body slots were given (§5.2.3) |
+| `body_slots` | mesh geometry | How many dismember partitions follow |
+| `body_slot_<i>` | mesh geometry | The body part of partition *i*, from nif.xml's `BSDismemberBodyPartType` |
+| `body_slot_<i>_flags` | mesh geometry | That partition's editor flags |
+
+Bones are ordinary FBX skin clusters and need no properties: the deformer names the
+bones, and the partitions are computed from the weights. Body slots are the one thing a
+skin cluster cannot say, which is why they are here — a character's skin needs them and
+a door hinge does not.
+
+### 5D.4 Level of detail
+
+| Mechanism | Effect |
+| --- | --- |
+| `nif_block_type` = `BSLODTriShape` | The shape becomes a LOD shape |
+| Materials named `LOD0`, `LOD1`, `LOD2`, assigned **per face** | Which level each triangle belongs to. Reassigning a face moves it between levels; the import groups the triangles and derives the counts (§5.2.4) |
+| `lod_size_0`, `lod_size_1`, `lod_size_2` | The counts outright, for a shape that came from a NIF. A per-face marking that disagrees wins |
+
+Faces left on the shape's own material belong to no level and keep their place at the
+end. This is the only per-face channel in FBX, so it is the only way to author this.
+
+### 5D.5 Shaders, textures and alpha
+
+A shader is an FBX material connected to the mesh's **node**, not to the geometry. A
+`BSLightingShaderProperty` is built from the material's own Phong values (§5.3.4), so
+authoring one is authoring an ordinary material. The properties below are for what a
+material cannot say.
+
+| Property | On | Effect |
+| --- | --- | --- |
+| `shader_block` | material | The shader class, when it is not a lighting shader: `BSEffectShaderProperty`, `BSWaterShaderProperty`, `BSSkyShaderProperty`. Checked against the schema |
+| `es_<field>` | material | Any field of that shader, flat |
+| `environment_map_scale` | material | The lighting shader's environment map scale |
+| `nif_texture_set`, `nif_alpha_property` | material | Identity marks that let several shapes **share** one texture set or alpha property. Two materials naming the same id get one block; leave them out and each gets its own (§5.2.1) |
+| `color_blending_enable`, `source_blend_mode`, `destination_blend_mode`, `alpha_test_enable`, `alpha_test_mode`, `alpha_test_threshold`, `no_sorter_flag` | material | A `NiAlphaProperty`, decomposed. Blend and test modes are GL names — `SRC_ALPHA`, `ONE_MINUS_SRC_ALPHA`, `GREATER` — rather than numbers (§4.4). The block is only built when the flags amount to something |
+| `flip_controllers`, `flip_<i>_*` | node | `NiFlipController`s — a texture flipbook. They hang off a shader property in the file, but the node is what an importer can put them back on |
+
+Textures are ordinary FBX textures connected to the material by property: `DiffuseColor`
+is slot 0, `NormalMap` slot 1, and `slot<N>` reaches the rest. Paths are normalised to
+`textures\…\*.dds`.
+
+### 5D.6 Extra data, bounds and multi-bounds
+
+| Property | On | Effect |
+| --- | --- | --- |
+| `extra_data` | node | How many extra data blocks follow |
+| `xd_<i>_type` | node | The class of block *i* — `NiStringExtraData`, `BSBehaviorGraphExtraData`, `NiIntegerExtraData`, `BSBound` |
+| `xd_<i>_<field>` | node | That block's fields, flat |
+| `multi_bound_type` | node | A `BSMultiBoundNode`'s volume class: `BSMultiBoundOBB` or `BSMultiBoundSphere` |
+| `mb_<field>` | node | The volume's own fields |
+| `multi_bound_culling` | node | The culling mode |
+
+`BSXFlags` is **never** authored. It is derived from the block graph on every import, and
+a hand-written one would be discarded — see `bsxflags-spec.md`.
+
+### 5D.7 Particles
+
+A particle system is a node, not a mesh: its vertices are a runtime buffer the file only
+sizes. Modifiers are child nodes.
+
+| Property | On | Effect |
+| --- | --- | --- |
+| `particle_system` | node | The system class; makes this node a `NiParticleSystem` |
+| `nps_<field>` | node | The system's own fields |
+| `particle_data`, `npsd_<field>` | node | The `NiPSysData` class and its fields |
+| `particle_modifier`, `particle_modifier_name` | child node | One modifier's class and name. Sibling order is stack order |
+| `particle_collider` | child node | One collider of a chain |
+| `<field>_ref` | node | A modifier field that points at another node, carried by that node's **name** rather than by a block index — `emitter_object_ref`, `gravity_object_ref` |
+| `particle_controllers`, `npc_<i>_type`, `npc_<i>_<field>` | node | Controllers that animate nothing (§4.9A) |
+
+### 5D.8 Controllers that animate nothing
+
+The last row above is not particular to particle systems, and is the general answer to
+"how do I attach a controller that has no keys":
+
+| Property | On | Effect |
+| --- | --- | --- |
+| `particle_controllers` | any node | How many controllers follow |
+| `npc_<i>_type` | any node | The controller class — `NiPSysUpdateCtlr`, `BSLagBoneController` |
+| `npc_<i>_<field>` | any node | Its fields. `Target` and `Next Controller` are rebuilt from the chain and are not written |
+
+A controller that *does* have keys is animation and is authored as animation, below.
+
+### 5D.9 Animation
+
+Animation is authored as FBX animation: a stack per sequence, a layer in it, curves on
+the nodes. A node's translation, rotation and scale need nothing extra. What needs
+naming is **which NIF controller a non-transform track drives**, and that rides in the
+animated property's *name*:
+
+```
+<controller class>|<controller id>|<interpolator id>|<property class>
+```
+
+with trailing empty parts dropped, so a controller with no ids at all is just its class
+name. `Visibility` is the one shorthand: it stands for a `NiVisController` with no ids.
+
+| Part | What it is | Example |
+| --- | --- | --- |
+| controller class | The NIF block to build | `NiPSysEmitterCtlr` |
+| controller id | Which of several of that class, from nif.xml's `GetCtlrID()` — a modifier's name, an extra datum's name | `NiPSysCylinderEmitter:0` |
+| interpolator id | Which of the controller's slots, from nif.xml's own field name with the spaces gone | `BirthRate`, `EmitterActive`, `Mutation` |
+| property class | The property the controller hangs on | `BSEffectShaderProperty` |
+
+So `NiPSysEmitterCtlr|NiPSysCylinderEmitter:0|BirthRate` on a particle system's node,
+keyed, is an emitter whose birth rate changes over time; the same name ending
+`|EmitterActive`, as a boolean, is the emitter switching on and off. The two go in
+different slots of **one** controller (§5A.6).
+
+Three things go on the **animation stack** rather than on a node, because they are one
+per take and a node property is one per node:
+
+| Property | On | Effect |
+| --- | --- | --- |
+| `const_<node>\|<property name>` | stack | A track holding one value for the whole take. Typed `bool`, `Number` or `ColorRGB` — a boolean constant and a float one are the same number and different animations |
+| `constxf_<node>` | stack | A transform held for the whole take: eight numbers, `tx ty tz qw qx qy qz scale` |
+| `interp_<node>\|<property name>` | stack | The interpolator class the track should rebuild as, when it is not the default for the value kind — `NiBoolTimelineInterpolator` rather than `NiBoolInterpolator` |
+
+### 5D.10 What is calculated, and cannot be authored
+
+Typing any of these is typing something the import overwrites. They are listed so that a
+scene that lacks them is not thought to be missing anything.
+
+| What | Where it comes from |
+| --- | --- |
+| `BSXFlags` | The block graph (`bsxflags-spec.md`) |
+| Tangents and bitangents | The UVs and triangles, NifSkope's algorithm (§5.3.1) |
+| Bounding spheres | The vertices |
+| A rigid body's inertia tensor | The shape and the mass (§5.7.2) |
+| A static body's mass | Always zero, whatever `nif_rb_mass` says |
+| A collision shape's radius | The fitted shape |
+| Skin partitions | The bone weights |
+| `Vertex Desc`, and every offset in it | Which attributes the mesh has (§5.3.0) |
+| Block order | The reference rules (§5B) |
+| A convex hull's plane equations | The hull's own faces (§5.7.1) |
+
+---
+
 ## 6. Traversal invariants
 
 Both directions depend on ordering that is easy to lose:
