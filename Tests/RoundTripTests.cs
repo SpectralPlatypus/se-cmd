@@ -893,6 +893,64 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void ACameraIsStillACamera()
+        {
+            // A NiCamera is a node in the scene graph and not a NiNode in the schema:
+            // it inherits NiAVObject directly and has no Children of its own. Reading
+            // the carried class against NiNode rejected it, so every camera came back
+            // as a plain node with its frustum, viewport and LOD adjust gone.
+            NifModel model = NifModel.CreateNew(Db, bsVersion: 100);
+
+            NifItem root = model.InsertBlock("NiNode");
+            model.SetString(root, "Name", "root");
+
+            NifItem camera = model.InsertBlock("NiCamera");
+            model.SetString(camera, "Name", "Camera01");
+            model.FindItem(camera, "Frustum Near")?.Value.SetFloat(5f);
+            model.FindItem(camera, "Frustum Far")?.Value.SetFloat(2500f);
+            model.FindItem(camera, "LOD Adjust")?.Value.SetFloat(1.5f);
+
+            if (model.SetArraySize(root, "Num Children", "Children", 1) is { } children)
+                children.Children[0].Value.SetLink(model.IndexOf(camera));
+
+            model.SetRoots([root]);
+
+            NifModel rebuilt = RoundTrip(model);
+
+            NifItem after = Assert.Single(rebuilt.Blocks, b => b.Name == "NiCamera");
+
+            // The class, and the fields the class is for.
+            Assert.Equal(5f, rebuilt.FindItem(after, "Frustum Near")!.Value.ToFloat(), 4);
+            Assert.Equal(2500f, rebuilt.FindItem(after, "Frustum Far")!.Value.ToFloat(), 4);
+            Assert.Equal(1.5f, rebuilt.FindItem(after, "LOD Adjust")!.Value.ToFloat(), 4);
+        }
+
+        [Fact]
+        public void ANodeThatClaimsToBeGeometryIsStillANode()
+        {
+            // Geometry is built on the mesh path, from a mesh. A node that names a
+            // shape class would arrive with no vertices to be one from, so the class
+            // is refused rather than followed.
+            NifModel model = NifModel.CreateNew(Db, bsVersion: 100);
+
+            NifItem root = model.InsertBlock("NiNode");
+            model.SetString(root, "Name", "root");
+            model.SetRoots([root]);
+
+            var scene = new FbxScene(new NifToFbx(model).Convert());
+
+            foreach (FbxObject node in scene.Objects.Where(o => o.Class == "Model"))
+                node.Properties.SetUserString(FbxNodeType.Property, "BSTriShape");
+
+            NifModel rebuilt = new FbxToNif(
+                scene,
+                new FbxToNifOptions { RootName = "root", Version = model.Version, UserVersion = model.UserVersion })
+                .Convert(Db);
+
+            Assert.DoesNotContain(rebuilt.Blocks, b => b.Name == "BSTriShape");
+        }
+
+        [Fact]
         public void ANodeKeepsAControllerThatAnimatesNothing()
         {
             // The same case as a particle system's update switch, on an ordinary node.

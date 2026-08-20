@@ -307,7 +307,19 @@ namespace SECmd.Conversion
             // A node is rebuilt as whatever kind of node it was. FBX has one kind
             // and NIF has a dozen, and they differ in what the engine does with them
             // rather than in where they sit.
-            string blockType = FbxNodeType.Read(model, _model, "NiNode");
+            // Any NiAVObject, not only a NiNode. A NiCamera is a node in the scene
+            // graph and not a NiNode in the schema -- it inherits NiAVObject directly,
+            // has no Children of its own, and was coming back as a plain NiNode with
+            // its frustum, viewport and LOD adjust gone.
+            string blockType = FbxNodeType.Read(model, _model, "NiNode", "NiAVObject");
+
+            // Geometry is built on the mesh path, from a mesh. A node claiming to be a
+            // shape would arrive here with no vertices to be one from.
+            if (_model.Database.Inherits(blockType, "NiTriBasedGeom")
+                || _model.Database.Inherits(blockType, "BSTriShape"))
+            {
+                blockType = "NiNode";
+            }
 
             NifItem node = NifParticleWriter.HasParticleSystem(model)
                 ? _model.WriteParticleSystem(_scene, model, name, Warnings, _pendingParticleLinks)
@@ -329,6 +341,7 @@ namespace SECmd.Conversion
             // to its own carrier, which owns every field it has.
             if (!NifParticleWriter.HasParticleSystem(model))
                 FbxNodeType.ReadFields(model, _model, node, "NiNode");
+
 
             FbxExtraDataWriter.ReadExtraData(model, _model, node, Warnings);
             FbxMultiBound.Read(model, _model, node, Warnings);
