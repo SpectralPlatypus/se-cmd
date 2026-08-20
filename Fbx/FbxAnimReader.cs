@@ -89,6 +89,35 @@ namespace SECmd.Fbx
             }
         }
 
+        /// <summary>
+        /// Puts each track's interpolator class back.
+        /// </summary>
+        /// <remarks>
+        /// Applied after the curves are read, since it names tracks that already
+        /// exist rather than creating any. A name for a track that is not there is
+        /// ignored: the curve it belonged to may have been removed in a DCC tool.
+        /// </remarks>
+        private static void ReadInterpolatorTypes(FbxObject stack, Dictionary<string, AnimTrack> tracks)
+        {
+            foreach (FbxProperty70 property in stack.Properties.All)
+            {
+                if (!property.Name.StartsWith(FbxAnimWriter.InterpolatorPrefix, StringComparison.Ordinal))
+                    continue;
+
+                string rest = property.Name[FbxAnimWriter.InterpolatorPrefix.Length..];
+                int bar = rest.IndexOf(AnimProperty.Separator);
+
+                if (bar <= 0 || !tracks.TryGetValue(rest[..bar], out AnimTrack? track))
+                    continue;
+
+                string name = rest[(bar + 1)..];
+                string type = property.Values.FirstOrDefault()?.ToString() ?? string.Empty;
+
+                foreach (AnimProperty p in track.Properties.Where(p => p.Name == name))
+                    p.InterpolatorType = type;
+            }
+        }
+
         private static AnimSequence? ReadStack(FbxScene scene, FbxObject stack)
         {
             var sequence = new AnimSequence
@@ -108,6 +137,7 @@ namespace SECmd.Fbx
             }
 
             ReadConstants(stack, tracks);
+            ReadInterpolatorTypes(stack, tracks);
 
             // A track with no keys is kept only when it holds a constant, which is an
             // animation with nothing to draw rather than an empty one.

@@ -828,6 +828,54 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void AnInterpolatorKeepsItsExactClass()
+        {
+            // NiBoolTimelineInterpolator is a NiBoolInterpolator that, in nif.xml's
+            // words, "ensures that keys have not been missed between two updates".
+            // Rebuilding it as its base turns a track that cannot skip an event into
+            // one that can, which shows up as an animation occasionally not firing.
+            //
+            // Built rather than loaded: no fixture has one, which is why 19 meshes in
+            // an 800-mesh sample lost it without a test noticing.
+            NifModel model = NifModel.CreateNew(Db);
+
+            NifItem root = model.InsertBlock("NiNode");
+            model.SetString(root, "Name", "root");
+
+            NifItem data = model.InsertBlock("NiBoolData");
+
+            model.FindItem(data, @"Data\Num Keys")!.Value.SetCount(2);
+            data.InvalidateConditionsRecursive();
+            model.FindItem(data, @"Data\Interpolation")!.Value.SetCount(1);
+            data.InvalidateConditionsRecursive();
+
+            NifItem keys = model.FindItem(data, @"Data\Keys")!;
+            model.UpdateArraySize(keys);
+
+            for (int i = 0; i < 2; i++)
+            {
+                model.FindItem(keys.Children[i], "Time")!.Value.SetFloat(i);
+                model.FindItem(keys.Children[i], "Value")!.Value.SetCount((uint)i);
+            }
+
+            NifItem interpolator = model.InsertBlock("NiBoolTimelineInterpolator");
+            model.SetRef(interpolator, "Data", data);
+
+            NifItem controller = model.InsertBlock("NiVisController");
+            model.SetRef(controller, "Interpolator", interpolator);
+            model.SetRef(controller, "Target", root);
+            model.SetRef(root, "Controller", controller);
+
+            model.SetRoots([root]);
+            model.UpdateHeader();
+
+            NifModel rebuilt = RoundTrip(model);
+
+            Assert.Single(rebuilt.Blocks, b => b.Name == "NiBoolTimelineInterpolator");
+            Assert.DoesNotContain(rebuilt.Blocks, b => b.Name == "NiBoolInterpolator");
+        }
+
+        [Fact]
         public void ANodeThatMovesOnItsOwnKeepsMoving()
         {
             // A NiTransformController attached to a node and named by no sequence moves

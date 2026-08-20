@@ -603,27 +603,42 @@ namespace SECmd.Nif
                 }
             }
 
-            NifItem interpolator = model.InsertBlock(property switch
+            NifItem interpolator = model.InsertBlock(InterpolatorClass(model, property));
+
+            model.SetRef(interpolator, "Data", data);
+            return interpolator;
+        }
+
+        /// <summary>
+        /// The interpolator class a track wants.
+        /// </summary>
+        /// <remarks>
+        /// The carried one when it is there and fits what the track drives, since the
+        /// obvious class is not always the right one: a NiBoolTimelineInterpolator is
+        /// a NiBoolInterpolator that cannot skip a key between updates, and rebuilding
+        /// it as its base loses that quietly.
+        /// </remarks>
+        private static string InterpolatorClass(NifModel model, AnimProperty property)
+        {
+            string fallback = property switch
             {
                 { IsColor: true } => "NiPoint3Interpolator",
                 { IsBoolean: true } => "NiBoolInterpolator",
                 _ => "NiFloatInterpolator"
-            });
+            };
 
-            model.SetRef(interpolator, "Data", data);
-            return interpolator;
+            return property.InterpolatorType.Length > 0
+                   && model.KnowsBlock(property.InterpolatorType)
+                   && model.Database.Inherits(property.InterpolatorType, fallback)
+                ? property.InterpolatorType
+                : fallback;
         }
 
         /// <summary>An interpolator holding one value and no keys.</summary>
         private static NifItem WriteConstantInterpolator(
             NifModel model, AnimProperty property, float constant)
         {
-            NifItem interpolator = model.InsertBlock(property switch
-            {
-                { IsColor: true } => "NiPoint3Interpolator",
-                { IsBoolean: true } => "NiBoolInterpolator",
-                _ => "NiFloatInterpolator"
-            });
+            NifItem interpolator = model.InsertBlock(InterpolatorClass(model, property));
 
             if (model.FindItem(interpolator, "Value") is { } value)
             {

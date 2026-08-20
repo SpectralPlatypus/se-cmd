@@ -101,6 +101,18 @@ namespace SECmd.Conversion
         /// </remarks>
         public float? Constant { get; set; }
 
+        /// <summary>
+        /// The interpolator class this track came from.
+        /// </summary>
+        /// <remarks>
+        /// Not always the obvious one. A <c>NiBoolTimelineInterpolator</c> is a
+        /// <c>NiBoolInterpolator</c> that, in nif.xml's words, "ensures that keys have
+        /// not been missed between two updates" — so rebuilding it as its base turns a
+        /// track that cannot skip an event into one that can, which shows up as an
+        /// animation occasionally not firing rather than as anything visibly wrong.
+        /// </remarks>
+        public string InterpolatorType { get; set; } = string.Empty;
+
         /// <summary>The FBX name for a visibility track.</summary>
         /// <remarks>
         /// Kept as the plain FBX property rather than an encoded one, because

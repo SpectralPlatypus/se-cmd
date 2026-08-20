@@ -96,6 +96,8 @@ namespace SECmd.Fbx
                         AddConstant(stack, track.NodeName, property, value);
                     else
                         AddPropertyChannel(scene, layer, model, property);
+
+                    AddInterpolatorType(stack, track.NodeName, property);
                 }
             }
 
@@ -104,6 +106,25 @@ namespace SECmd.Fbx
 
         /// <summary>Prefix on a stack property holding a track's constant value.</summary>
         public const string ConstantPrefix = "const_";
+
+        /// <summary>Prefix on a stack property naming a track's interpolator class.</summary>
+        /// <remarks>
+        /// On the stack rather than in the property's name, because the name is what
+        /// FBX animates and changing its shape would change every track's identity.
+        /// One entry per node and property, as constants are.
+        /// </remarks>
+        public const string InterpolatorPrefix = "interp_";
+
+        /// <summary>Records which interpolator class a track came from.</summary>
+        private static void AddInterpolatorType(FbxObject stack, string nodeName, AnimProperty property)
+        {
+            if (property.InterpolatorType.Length == 0)
+                return;
+
+            stack.Properties.SetUserString(
+                $"{InterpolatorPrefix}{nodeName}{AnimProperty.Separator}{property.Name}",
+                property.InterpolatorType);
+        }
 
         /// <summary>
         /// Records a track that holds one value for the whole sequence.

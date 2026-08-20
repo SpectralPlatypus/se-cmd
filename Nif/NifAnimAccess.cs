@@ -185,6 +185,7 @@ namespace SECmd.Nif
                 Name = AnimProperty.ToPropertyName(controller.Name, id, string.Empty, string.Empty),
                 IsBoolean = visibility,
                 ControllerType = controller.Name,
+                InterpolatorType = interpolator.Name,
                 ControllerId = id
             };
 
@@ -272,6 +273,7 @@ namespace SECmd.Nif
                     model.GetString(controlled, "Interpolator ID"),
                     model.GetString(controlled, "Property Type")),
                 IsBoolean = boolean,
+                InterpolatorType = interpolator.Name,
                 ControllerType = model.GetString(controlled, "Controller Type"),
                 ControllerId = model.GetString(controlled, "Controller ID"),
                 InterpolatorId = model.GetString(controlled, "Interpolator ID"),
