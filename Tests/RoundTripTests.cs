@@ -144,6 +144,40 @@ namespace SECmd.Tests
             Assert.Equal("NiNode", root.Name);
         }
 
+        [Fact]
+        public void ACarriedClassBringsItsOwnFieldsWithIt()
+        {
+            // Carrying a class without the thing the class is for is worse than not
+            // carrying it: a BSLODTriShape rebuilt without its triangle counts draws
+            // nothing at any distance. The same shape of bug waits in every class that
+            // adds fields to its base -- a BSOrderedNode's sort bound, a BSValueNode's
+            // value.
+            //
+            // The values here are deliberately not the schema's defaults. The fixture's
+            // BSOrderedNode happens to hold exactly the defaults, so it round-trips
+            // whether or not anything is carried, and proves nothing either way.
+            NifModel model = NifModel.CreateNew(Db);
+
+            NifItem root = model.InsertBlock("BSOrderedNode");
+            model.SetString(root, "Name", "sorted");
+
+            model.FindItem(root, "Alpha Sort Bound")!.Value.Set(new NifVector4(1f, 2f, 3f, 4f));
+            model.FindItem(root, "Static Bound")!.Value.SetCount(0);
+
+            model.SetRoots([root]);
+            model.UpdateHeader();
+
+            NifModel rebuilt = RoundTrip(model);
+
+            NifItem after = Assert.Single(rebuilt.Blocks, b => b.Name == "BSOrderedNode");
+
+            NifVector4 bound = rebuilt.FindItem(after, "Alpha Sort Bound")!.Value.Get<NifVector4>();
+
+            Assert.Equal(1f, bound.X, 3);
+            Assert.Equal(4f, bound.W, 3);
+            Assert.Equal(0u, rebuilt.FindItem(after, "Static Bound")!.Value.ToUInt());
+        }
+
         [Theory]
         [InlineData("nifly/TestNifFile_OrderedNode_SE.nif", "BSOrderedNode")]
         [InlineData("nifly/TestNifFile_MultiBound_SE.nif", "BSMultiBoundNode")]

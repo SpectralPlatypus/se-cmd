@@ -126,8 +126,14 @@ namespace SECmd.Conversion
             // Named after the file rather than after any node in the scene (§5.2).
             _model.SetString(root, "Name", _options.RootName);
 
+            // The root is built here rather than by the walk, so everything the walk
+            // does for a node has to be done for it too.
             if (sceneRoots.Count == 1 && !HasGeometry(sceneRoots[0]))
+            {
+                FbxNodeType.ReadFields(sceneRoots[0], _model, root, "NiNode");
                 FbxExtraDataWriter.ReadExtraData(sceneRoots[0], _model, root, Warnings);
+                FbxMultiBound.Read(sceneRoots[0], _model, root, Warnings);
+            }
             _nodesByName[_options.RootName] = root;
 
             var rootModels = sceneRoots;
@@ -315,6 +321,13 @@ namespace SECmd.Conversion
             // like any other; it just has no geometry for them to hang off.
             if (NifParticleWriter.HasParticleSystem(model))
                 BuildMaterial(node, model);
+
+            // Whatever the class adds to a plain NiNode: an ordered node's sort
+            // bound, a value node's value. Carrying the class without them leaves a
+            // block that is the right kind and says nothing. A particle system is left
+            // to its own carrier, which owns every field it has.
+            if (!NifParticleWriter.HasParticleSystem(model))
+                FbxNodeType.ReadFields(model, _model, node, "NiNode");
 
             FbxExtraDataWriter.ReadExtraData(model, _model, node, Warnings);
             FbxMultiBound.Read(model, _model, node, Warnings);
@@ -1307,6 +1320,7 @@ namespace SECmd.Conversion
             // A BSLODTriShape's levels are counts into its one triangle list, and a
             // shape whose counts are all zero draws nothing at any distance.
             FbxLodSizes.Read(geometry, _model, shape);
+            FbxNodeType.ReadFields(geometry, _model, shape, "NiTriBasedGeom");
 
             NifItem data = _model.InsertBlock("NiTriShapeData");
             WriteGeometryData(data, mesh);

@@ -186,7 +186,13 @@ namespace SECmd.Conversion
             _built[block] = node;
             Remember(block, node);
 
-            FbxNodeType.Write(node, block);
+            // The class, and whatever fields it adds to a plain NiNode. A particle
+            // system is left alone: it has a carrier of its own that owns every field
+            // it has, and two carriers writing one field is how one of them loses.
+            if (FbxParticleWriter.IsParticleSystem(_model, block))
+                FbxNodeType.Write(node, block);
+            else
+                FbxNodeType.WriteWithFields(node, _model, block, "NiNode", MultiBoundFields);
 
             // Everything hanging off the node that FBX has no place for: behaviour
             // graph paths, string data, bounds. BSXFlags is left out, since the import
@@ -513,6 +519,14 @@ namespace SECmd.Conversion
                 FbxMeshWriter.AddSingleMaterialElement(geometry);
         }
 
+        /// <summary>Fields the multi-bound carrier owns (§5.2.2).</summary>
+        private static readonly HashSet<string> MultiBoundFields =
+            new(StringComparer.Ordinal) { "Multi Bound", "Culling Mode" };
+
+        /// <summary>Fields the LOD carrier owns (§5.2.4).</summary>
+        private static readonly HashSet<string> LodFields =
+            new(StringComparer.Ordinal) { "LOD0 Size", "LOD1 Size", "LOD2 Size", "Vertices", "Dynamic Data Size" };
+
         private IEnumerable<NifItem> ChildShapesOf(NifItem shape)
         {
             if (_model.GetRef(shape, "Shape") is { } single)
@@ -772,7 +786,12 @@ namespace SECmd.Conversion
 
             // Which geometry class this was. BSDynamicTriShape and BSTriShape hold the
             // same vertices and are not the same thing to the engine.
-            FbxNodeType.Write(geometry, shape);
+            // The class, and the fields it adds to the geometry it derives from --
+            // the LOD counts have their own carrier, being an array of three.
+            FbxNodeType.WriteWithFields(
+                geometry, _model, shape,
+                _model.BlockInherits(shape, "BSTriShape") ? "BSTriShape" : "NiTriBasedGeom",
+                LodFields);
             FbxDynamicShape.Write(geometry, _model, shape);
             FbxLodSizes.Write(geometry, _model, shape);
             scene.Connect(geometry, holder);
