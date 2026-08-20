@@ -326,8 +326,11 @@ namespace SECmd.Conversion
                   ?? _model.InsertBlock(blockType)
                 : _model.InsertBlock(blockType);
 
-            _model.SetString(node, "Name", name);
+            _model.SetString(node, "Name", FbxNodeType.ReadName(model, name));
             _model.SetTransform(node, transform);
+
+            // Keyed by the FBX name rather than the NIF one: that is what an animation
+            // track names, and a file's unnamed nodes would otherwise share one key.
             _nodesByName[name] = node;
 
             // A particle system is a shape and carries a shader and an alpha property

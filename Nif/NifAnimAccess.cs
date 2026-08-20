@@ -83,7 +83,10 @@ namespace SECmd.Nif
                 if (!model.BlockInherits(block, "NiAVObject"))
                     continue;
 
-                string name = model.GetName(block);
+                // The name the export gives the node, which for a block with none of
+                // its own is its class. Skipping those lost every camera's frustum
+                // controller, since a NiCamera in the game's files is unnamed.
+                string name = TrackName(model, block);
 
                 if (name.Length == 0)
                     continue;
@@ -129,6 +132,22 @@ namespace SECmd.Nif
             (sequence.Start, sequence.Stop) = sequence.KeySpan();
 
             sequences.Add(sequence);
+        }
+
+        /// <summary>
+        /// The name an animation track binds a block by.
+        /// </summary>
+        /// <remarks>
+        /// A track names a node, and the node it names is the FBX object — so this has
+        /// to be what the export calls it, which for a block with no name of its own
+        /// is its class. The name itself travels separately (`nif_name`), so an
+        /// unnamed node still comes back unnamed.
+        /// </remarks>
+        public static string TrackName(NifModel model, NifItem block)
+        {
+            string name = model.GetName(block);
+
+            return name.Length > 0 ? name : block.Name;
         }
 
         /// <summary>Everything on a node that can carry a controller chain.</summary>

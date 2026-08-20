@@ -122,7 +122,10 @@ namespace SECmd.Conversion
         /// </remarks>
         private void Remember(NifItem block, FbxObject node)
         {
-            string name = _model.GetName(block);
+            // The same name an animation track binds by: a block's own, or its class
+            // when it has none. The game's cameras are unnamed and their frustum
+            // controllers had nothing to bind to.
+            string name = NifAnimAccess.TrackName(_model, block);
 
             if (name.Length > 0)
                 _modelsByName.TryAdd(name, node);
@@ -193,6 +196,11 @@ namespace SECmd.Conversion
                 FbxNodeType.Write(node, block);
             else
                 FbxNodeType.WriteWithFields(node, _model, block, "NiNode", MultiBoundFields);
+
+            // A block with no name at all -- the game's cameras have none -- is
+            // exported under its class name, since FBX has no anonymous object. This
+            // is what says the name was empty rather than that.
+            FbxNodeType.WriteName(node, _model, block);
 
             // Everything hanging off the node that FBX has no place for: behaviour
             // graph paths, string data, bounds. BSXFlags is left out, since the import

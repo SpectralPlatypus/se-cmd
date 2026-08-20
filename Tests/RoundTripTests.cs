@@ -926,6 +926,53 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void AnUnnamedNodeStaysUnnamedAndKeepsItsAnimation()
+        {
+            // The game's cameras have no name at all. FBX has no anonymous object, so
+            // the export falls back to the class name -- and that name has to be what
+            // the animation binds by, or the controller has no node to hang on, and
+            // it has to be undone on the way back, or the node comes back called
+            // "NiCamera".
+            NifModel model = NifModel.CreateNew(Db, bsVersion: 100);
+
+            NifItem root = model.InsertBlock("NiNode");
+            model.SetString(root, "Name", "root");
+
+            NifItem camera = model.InsertBlock("NiCamera");
+            model.SetString(camera, "Name", string.Empty);
+
+            NifItem controller = model.InsertBlock("BSFrustumFOVController");
+            NifItem interpolator = model.InsertBlock("NiFloatInterpolator");
+            NifItem data = model.InsertBlock("NiFloatData");
+
+            NifItem keys = model.SetArraySize(data, @"Data\Num Keys", @"Data\Keys", 2)!;
+            keys.Children[0].Children.First(c => c.Name == "Time").Value.SetFloat(0f);
+            keys.Children[0].Children.First(c => c.Name == "Value").Value.SetFloat(60f);
+            keys.Children[1].Children.First(c => c.Name == "Time").Value.SetFloat(1f);
+            keys.Children[1].Children.First(c => c.Name == "Value").Value.SetFloat(30f);
+
+            model.SetRef(interpolator, "Data", data);
+            model.SetRef(controller, "Interpolator", interpolator);
+            model.SetRef(controller, "Target", camera);
+            model.SetRef(camera, "Controller", controller);
+
+            if (model.SetArraySize(root, "Num Children", "Children", 1) is { } children)
+                children.Children[0].Value.SetLink(model.IndexOf(camera));
+
+            model.SetRoots([root]);
+
+            NifModel rebuilt = RoundTrip(model);
+
+            NifItem after = Assert.Single(rebuilt.Blocks, b => b.Name == "NiCamera");
+
+            Assert.Equal(string.Empty, rebuilt.GetName(after));
+            Assert.Single(rebuilt.Blocks, b => b.Name == "BSFrustumFOVController");
+
+            // On the camera's chain, not merely present.
+            Assert.Equal("BSFrustumFOVController", rebuilt.GetRef(after, "Controller")!.Name);
+        }
+
+        [Fact]
         public void ANodeThatClaimsToBeGeometryIsStillANode()
         {
             // Geometry is built on the mesh path, from a mesh. A node that names a

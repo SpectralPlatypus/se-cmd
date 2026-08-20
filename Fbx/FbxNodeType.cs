@@ -103,6 +103,35 @@ namespace SECmd.Fbx
         /// scene from elsewhere — or one whose property has been edited into something
         /// else — cannot turn a node into a shape or a controller.
         /// </remarks>
+        /// <summary>The property holding a block's real name, when FBX cannot.</summary>
+        /// <remarks>
+        /// Almost every node's name survives as the FBX object's own, through
+        /// <see cref="NameEncoding"/>. One does not: a block with **no** name, which
+        /// the game's cameras and a few effect nodes have. FBX has no anonymous
+        /// object, so the export falls back to the class name — and without this the
+        /// node came back called `NiCamera`.
+        ///
+        /// It also gives the animation layer something to bind to. That layer keys
+        /// tracks by node name, and every unnamed node in a file is the same key.
+        /// </remarks>
+        public const string NameProperty = "nif_name";
+
+        /// <summary>Records a name FBX cannot carry as the object's own.</summary>
+        public static void WriteName(FbxObject node, NifModel model, NifItem block)
+        {
+            if (model.FindItem(block, "Name") is null)
+                return;
+
+            string name = model.GetName(block);
+
+            if (name.Length == 0)
+                node.Properties.SetUserString(NameProperty, string.Empty);
+        }
+
+        /// <summary>The name a node should be given, which is usually its own.</summary>
+        public static string ReadName(FbxObject node, string fallback) =>
+            node.Properties.Has(NameProperty) ? node.Properties.GetString(NameProperty) : fallback;
+
         public static string Read(FbxObject node, NifModel model, string fallback, string ancestor = "NiNode")
         {
             string name = node.Properties.GetString(Property);
