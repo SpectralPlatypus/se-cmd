@@ -142,7 +142,7 @@ namespace SECmd.Fbx
             // A track with no keys is kept only when it holds a constant, which is an
             // animation with nothing to draw rather than an empty one.
             sequence.Tracks.AddRange(
-                tracks.Values.Where(t => t.HasKeys || t.Properties.Any(p => p.Constant is not null)));
+                tracks.Values.Where(t => t.Says));
 
             if (sequence.Tracks.Count == 0)
                 return null;

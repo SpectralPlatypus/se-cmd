@@ -196,6 +196,18 @@ namespace SECmd.Conversion
         public IEnumerable<AnimCurve> AllCurves => Curves.Concat(Properties.SelectMany(p => p.Curves));
 
         public bool HasKeys => AllCurves.Any(c => c.HasKeys);
+
+        /// <summary>
+        /// Whether this track says anything at all, keys or not.
+        /// </summary>
+        /// <remarks>
+        /// A constant holds one value for the whole sequence rather than none — two
+        /// sequences can hold different constants for the same property, which is
+        /// exactly what a "loop" sequence that hides a mesh outright does. Filtering
+        /// on <see cref="HasKeys"/> alone dropped those tracks, and with them the
+        /// controlled blocks and interpolators that carried them.
+        /// </remarks>
+        public bool Says => HasKeys || Properties.Any(p => p.Constant is not null);
     }
 
     /// <summary>

@@ -121,14 +121,7 @@ namespace SECmd.Nif
                 }
             }
 
-            // A track whose properties are all constant still has something to say.
-            // An emitter whose birth rate is one number for the whole sequence is
-            // animation -- the next sequence can say a different number -- and
-            // dropping it here took the controller, its interpolators and their data
-            // with it, since nothing else carries an attached controller.
-            var keyed = tracks.Values
-                .Where(t => t.HasKeys || t.Properties.Any(p => p.Constant is not null))
-                .ToList();
+            var keyed = tracks.Values.Where(t => t.Says).ToList();
 
             if (keyed.Count == 0)
                 return;
@@ -269,7 +262,7 @@ namespace SECmd.Nif
                     ReadControlledBlock(model, entry, tracks);
             }
 
-            sequence.Tracks.AddRange(tracks.Values.Where(t => t.HasKeys));
+            sequence.Tracks.AddRange(tracks.Values.Where(t => t.Says));
 
             if (sequence.Tracks.Count == 0)
                 return null;
@@ -373,8 +366,11 @@ namespace SECmd.Nif
                 // No data block. The interpolator's own Value is what it holds for the
                 // whole sequence, which is an animation and not a resting value: the
                 // next sequence can say something else.
-                if (model.FindItem(interpolator, "Value") is not { } constant)
+                if (model.FindItem(interpolator, "Value") is not { } constant
+                    || IsNoValue(property, constant))
+                {
                     return false;
+                }
 
                 property.Constant = constant.Value.ToFloat();
 
@@ -403,6 +399,28 @@ namespace SECmd.Nif
             }
 
             return property.Curves.Any(c => c.HasKeys);
+        }
+
+        /// <summary>
+        /// Whether a pose value is the sentinel that says there is no pose value.
+        /// </summary>
+        /// <remarks>
+        /// nif.xml calls the field "Pose value if lacking NiFloatData" and gives it a
+        /// default that means "none": <c>#INV_FLT#</c> for a float interpolator,
+        /// <c>2</c> for a boolean one — a bool being 0 or 1, never 2.
+        ///
+        /// An interpolator with neither data nor a pose value holds nothing, and
+        /// reading the sentinel as a constant turns it into an animation that sets
+        /// every float it drives to 3.4e38.
+        /// </remarks>
+        private static bool IsNoValue(AnimProperty property, NifItem constant)
+        {
+            if (property.IsBoolean)
+                return constant.Value.ToUInt() > 1;
+
+            float value = constant.Value.ToFloat();
+
+            return !float.IsFinite(value) || MathF.Abs(value) > 1e30f;
         }
 
         /// <summary>

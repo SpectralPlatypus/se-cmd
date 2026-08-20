@@ -772,6 +772,72 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void ASequenceThatOnlyHidesSomethingIsStillASequenceEntry()
+        {
+            // A track can hold one value for a whole sequence rather than keys. An
+            // effect's "loop" sequence hides a mesh outright -- a NiBoolInterpolator
+            // with no data and Value 0 -- and its "begin" sequence keys the same
+            // property. Both are animation; the second sequence says something the
+            // first does not.
+            NifModel model = NifModel.CreateNew(Db, bsVersion: 100);
+
+            NifItem root = model.InsertBlock("NiNode");
+            model.SetString(root, "Name", "root");
+
+            NifItem node = model.InsertBlock("NiNode");
+            model.SetString(node, "Name", "Flames");
+
+            if (model.SetArraySize(root, "Num Children", "Children", 1) is { } children)
+                children.Children[0].Value.SetLink(model.IndexOf(node));
+
+            NifItem sequence = model.InsertBlock("NiControllerSequence");
+            model.SetString(sequence, "Name", "mLoop");
+            model.FindItem(sequence, "Start Time")?.Value.SetFloat(0f);
+            model.FindItem(sequence, "Stop Time")?.Value.SetFloat(1f);
+
+            NifItem entry = model
+                .SetArraySize(sequence, "Num Controlled Blocks", "Controlled Blocks", 1)!
+                .Children[0];
+
+            NifItem interpolator = model.InsertBlock("NiBoolInterpolator");
+            model.FindItem(interpolator, "Value")?.Value.SetCount(0);
+
+            model.SetRef(entry, "Interpolator", interpolator);
+            model.SetString(entry, "Node Name", "Flames");
+            model.SetString(entry, "Controller Type", "NiVisController");
+
+            AnimSequence read = Assert.Single(model.ReadAnimations());
+            AnimTrack track = Assert.Single(read.Tracks);
+
+            Assert.Equal(0f, Assert.Single(track.Properties).Constant);
+        }
+
+        [Fact]
+        public void AnInterpolatorHoldingNeitherKeysNorAPoseValueSaysNothing()
+        {
+            // nif.xml gives the pose value a default that means "none": INV_FLT for a
+            // float, 2 for a bool, a bool being 0 or 1 and never 2. Reading the
+            // sentinel as a constant would set every float it drives to 3.4e38.
+            NifModel model = NifModel.CreateNew(Db, bsVersion: 100);
+
+            NifItem root = model.InsertBlock("NiNode");
+            model.SetString(root, "Name", "root");
+
+            NifItem sequence = model.InsertBlock("NiControllerSequence");
+            model.SetString(sequence, "Name", "empty");
+
+            NifItem entry = model
+                .SetArraySize(sequence, "Num Controlled Blocks", "Controlled Blocks", 1)!
+                .Children[0];
+
+            model.SetRef(entry, "Interpolator", model.InsertBlock("NiFloatInterpolator"));
+            model.SetString(entry, "Node Name", "root");
+            model.SetString(entry, "Controller Type", "NiVisController");
+
+            Assert.Empty(model.ReadAnimations());
+        }
+
+        [Fact]
         public void ANodeKeepsAControllerThatAnimatesNothing()
         {
             // The same case as a particle system's update switch, on an ordinary node.
