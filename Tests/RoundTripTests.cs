@@ -771,6 +771,69 @@ namespace SECmd.Tests
             Assert.Equal(texture, rebuilt.GetString(rebuilt.GetRef(after, "Shader Property")!, "Source Texture"));
         }
 
+        [Fact]
+        public void ANodeKeepsAControllerThatAnimatesNothing()
+        {
+            // The same case as a particle system's update switch, on an ordinary node.
+            // A BSLagBoneController makes a bone trail behind the one above it by a
+            // fixed amount -- a property of the skeleton, not of a timeline -- and it
+            // holds no interpolator, so the animation layer cannot see it. Seven of
+            // the sampled meshes lost one, every skeleton that had any.
+            NifModel source = Load("xpmsse/skeleton_cow.nif");
+
+            NifItem node = source.Blocks.First(
+                b => b.Name == "NiNode" && source.GetName(b).Length > 0);
+
+            NifItem lag = source.InsertBlock("BSLagBoneController");
+            source.FindItem(lag, "Linear Velocity")?.Value.SetFloat(0.25f);
+            source.FindItem(lag, "Maximum Distance")?.Value.SetFloat(4f);
+            source.SetRef(lag, "Target", node);
+            source.SetRef(node, "Controller", lag);
+
+            NifModel rebuilt = RoundTrip(source);
+
+            NifItem after = Assert.Single(rebuilt.Blocks, b => b.Name == "BSLagBoneController");
+
+            // Its fields came with it, not merely its class.
+            Assert.Equal(0.25f, rebuilt.FindItem(after, "Linear Velocity")!.Value.ToFloat(), 4);
+            Assert.Equal(4f, rebuilt.FindItem(after, "Maximum Distance")!.Value.ToFloat(), 4);
+
+            // And it is on the same node's chain, pointing back at it.
+            NifItem host = rebuilt.Blocks.First(
+                b => b.Name == "NiNode" && rebuilt.GetName(b) == source.GetName(node));
+
+            Assert.Equal(host, rebuilt.GetRef(after, "Target"));
+            Assert.Equal(after, rebuilt.GetRef(host, "Controller"));
+        }
+
+        [Fact]
+        public void TheSequenceMachineryIsNotCarriedAsAStructuralController()
+        {
+            // A NiControllerManager holds no interpolator either, and it is *not* one
+            // of these: it is the animation layer, rebuilt from the sequences. Carried
+            // here as well it came back into files whose animation had been turned off.
+            NifModel source = Load("nifly/TestNifFile_Animated_LE.nif");
+
+            Assert.Contains(source.Blocks, b => b.Name == "NiControllerManager");
+
+            var scene = new FbxScene(new NifToFbx(source, new NifToFbxOptions { ExportAnimation = false })
+                .Convert());
+
+            NifModel rebuilt = new FbxToNif(
+                scene,
+                new FbxToNifOptions
+                {
+                    RootName = source.GetName(
+                        source.GetBlock(source.FindItem(source.Footer, "Roots")!.Children[0])!),
+                    Version = source.Version,
+                    UserVersion = source.UserVersion,
+                    LegendaryEdition = source.BSVersion < 100
+                }).Convert(Db);
+
+            Assert.DoesNotContain(rebuilt.Blocks, b => b.Name == "NiControllerManager");
+            Assert.DoesNotContain(rebuilt.Blocks, b => b.Name == "NiMultiTargetTransformController");
+        }
+
                 [Fact]
         public void AParticleSystemKeepsTheControllerThatRunsIt()
         {

@@ -133,6 +133,7 @@ namespace SECmd.Conversion
                 FbxNodeType.ReadFields(sceneRoots[0], _model, root, "NiNode");
                 FbxExtraDataWriter.ReadExtraData(sceneRoots[0], _model, root, Warnings);
                 FbxMultiBound.Read(sceneRoots[0], _model, root, Warnings);
+                FbxNodeControllers.Read(sceneRoots[0], _model, root, Warnings);
             }
             _nodesByName[_options.RootName] = root;
 
@@ -331,6 +332,11 @@ namespace SECmd.Conversion
 
             FbxExtraDataWriter.ReadExtraData(model, _model, node, Warnings);
             FbxMultiBound.Read(model, _model, node, Warnings);
+
+            // Controllers that animate nothing. A particle system rebuilds its own
+            // through its carrier, which owns the whole system.
+            if (!NifParticleWriter.HasParticleSystem(model))
+                FbxNodeControllers.Read(model, _model, node, Warnings);
 
             // Collision found under this node attaches to it rather than becoming a
             // child, so collect it before recursing into the real children.

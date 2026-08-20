@@ -207,6 +207,13 @@ namespace SECmd.Conversion
             // A particle system has no geometry to export -- its vertices are a
             // runtime buffer the file only sizes -- so it stays an empty node with
             // the system carried alongside it.
+            // A controller that holds no interpolator drives nothing the animation
+            // layer can see, and nothing else in the file would bring it back. A
+            // particle system's update switch is the familiar one; a skeleton's
+            // BSLagBoneController is the same case on an ordinary node.
+            if (!FbxParticleWriter.IsParticleSystem(_model, block))
+                FbxNodeControllers.Write(node, _model, block);
+
             if (FbxParticleWriter.IsParticleSystem(_model, block))
             {
                 FbxParticleWriter.AddParticleSystem(scene, node, _model, block);
