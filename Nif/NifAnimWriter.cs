@@ -240,6 +240,17 @@ namespace SECmd.Nif
         /// </remarks>
         private static string SlotFor(NifModel model, NifItem controller, AnimProperty property)
         {
+            // A controller with slots of its own names them, and so does the track.
+            // A BSProceduralLightningController holds nine, called
+            // "Interpolator 2: Mutation" and so on, and a sequence's Interpolator ID
+            // for one of them is "Mutation" -- nif.xml's own name for the slot, with
+            // the spaces gone.
+            if (property.InterpolatorId.Length > 0
+                && NamedSlot(model, controller, property.InterpolatorId) is { } named)
+            {
+                return named;
+            }
+
             if (model.FindItem(controller, "Visibility Interpolator") is null)
                 return "Interpolator";
 
@@ -254,6 +265,36 @@ namespace SECmd.Nif
 
         /// <summary>nif.xml's spelling for the visibility half of an emitter controller.</summary>
         private const string EmitterActiveId = "EmitterActive";
+
+        /// <summary>
+        /// The interpolator field a track's id names, if the controller has one.
+        /// </summary>
+        /// <remarks>
+        /// nif.xml spells a multi-slot controller's fields as
+        /// <c>Interpolator &lt;n&gt;: &lt;what it drives&gt;</c>, and the id a sequence
+        /// stores is the second half with its spaces removed. Matching them puts each
+        /// of the nine tracks a lightning controller carries back in the slot it came
+        /// from; without it they all went to `Interpolator`, which such a controller
+        /// does not even have, and eight of the nine were lost.
+        /// </remarks>
+        private static string? NamedSlot(NifModel model, NifItem controller, string id)
+        {
+            foreach (NifItem child in controller.Children)
+            {
+                if (child.IsArray || child.Value.Type != NifValueType.Link)
+                    continue;
+
+                int colon = child.Name.IndexOf(':');
+                string spelled = colon < 0 ? child.Name : child.Name[(colon + 1)..];
+
+                if (Squeeze(spelled) == Squeeze(id))
+                    return child.Name;
+            }
+
+            return null;
+
+            static string Squeeze(string text) => text.Replace(" ", string.Empty);
+        }
 
         /// <summary>
         /// Puts property animation back where it was: on the thing it controls.
