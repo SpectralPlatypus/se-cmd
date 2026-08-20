@@ -519,6 +519,60 @@ namespace SECmd.Conversion
                 FbxMeshWriter.AddSingleMaterialElement(geometry);
         }
 
+        /// <summary>The LOD level materials, shared by every shape that has levels.</summary>
+        private readonly Dictionary<string, FbxObject> _lodMaterials = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Marks which triangles belong to which level of detail.
+        /// </summary>
+        /// <remarks>
+        /// A <c>BSLODTriShape</c>'s levels are three counts into one triangle list, and
+        /// counts alone give an artist nothing to edit: they can be carried across
+        /// (§5.2.4) but not authored. FBX has no LOD group, so the levels ride as a
+        /// material per polygon — the one per-face channel every DCC tool shows and
+        /// lets an artist reassign, and the same mechanism ck-cmd uses for collision
+        /// materials (§4.8).
+        ///
+        /// The materials are named <c>LOD0</c>, <c>LOD1</c>, <c>LOD2</c> and are
+        /// resolved by that name rather than by their index, so an artist adding or
+        /// removing a material slot does not silently shift every triangle a level.
+        /// The shape's own material stays where it was, connected first.
+        ///
+        /// This is the second, editable half of the pair the rest of the port uses:
+        /// the counts are exact and win a round trip, and a marking that disagrees with
+        /// them is an artist having said something, so it wins instead (§5C.1).
+        /// </remarks>
+        private void AddLodMaterials(
+            FbxScene scene, NifItem shape, FbxObject holder, FbxObject geometry, MeshGeometry mesh)
+        {
+            if (!_model.BlockInherits(shape, "BSLODTriShape") || mesh.Triangles.Count == 0)
+                return;
+
+            // Whatever the shape's own material took, the levels follow.
+            int first = scene.ChildrenOf(holder.Id).Count(o => o.Class == "Material");
+
+            for (int level = 0; level < FbxLodSizes.Levels; level++)
+            {
+                string name = FbxLodSizes.LevelMaterial(level);
+
+                if (!_lodMaterials.TryGetValue(name, out FbxObject? material))
+                {
+                    material = scene.AddObject("Material", name, string.Empty);
+                    material.Node.Nodes.Add(new FbxNode("Version", 102));
+                    material.Node.Nodes.Add(new FbxNode("ShadingModel", "Phong"));
+                    material.Node.Nodes.Add(new FbxNode("MultiLayer", 0));
+
+                    _lodMaterials[name] = material;
+                }
+
+                scene.Connect(material, holder);
+            }
+
+            List<int> levels = FbxLodSizes.LevelPerTriangle(_model, shape, mesh.Triangles.Count);
+
+            FbxMeshWriter.AddPerPolygonMaterialElement(geometry, [.. levels.Select(l => first + l)]);
+        }
+
         /// <summary>Fields the multi-bound carrier owns (§5.2.2).</summary>
         private static readonly HashSet<string> MultiBoundFields =
             new(StringComparer.Ordinal) { "Multi Bound", "Culling Mode" };
@@ -799,6 +853,8 @@ namespace SECmd.Conversion
             ConvertSkin(scene, shape, geometry);
 
             AddMaterialTo(scene, shape, holder, name, geometry);
+
+            AddLodMaterials(scene, shape, holder, geometry, mesh);
 
             // A flipbook controller hangs off a property rather than off the shape,
             // but the node is what an importer has to put it back on.

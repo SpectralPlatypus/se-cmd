@@ -639,6 +639,52 @@ geometry. Carrying the class without them gives a shape whose every level is zer
 triangles long: present, correct in every other respect, and invisible. A shape with no
 counts to carry keeps zeros, which is what a mesh with no LOD groups should have.
 
+##### Marking the triangles, not just counting them
+
+Three counts reproduce a shape that was already a LOD shape. They give an author nothing
+to *edit*: the levels are invisible in a DCC tool, and there is no way to move a face
+between them or to build one from a mesh that never was a LOD shape. That is the same
+gap the skin partitions had, and it is closed the same way — by putting the thing an
+artist has to touch somewhere the artist can touch it.
+
+The levels ride as **a material per polygon**, named `LOD0`, `LOD1`, `LOD2`. It is the
+one per-face channel every DCC tool exposes and lets an artist reassign, and it is the
+mechanism ck-cmd already uses to carry collision materials (§4.8) — there
+`eByPolygon`/`eIndexToDirect` on a `bhkPackedNiTriStripsShape`, here the identical layer
+element on the shape itself. ck-cmd has no LOD support of any kind; this is a place FBX
+can say more than ck-cmd asked it to.
+
+Export connects the three materials to the mesh's node **after** the shape's own
+material, so the shape's material keeps the slot it had, and writes one index per
+triangle. Import resolves them **by name rather than by index**: an artist who adds or
+removes a material slot would otherwise shift every triangle a level, silently.
+
+Two things follow from the counts being *runs* over one list:
+
+- **Import reorders the triangles.** A marking is a level per face in whatever order the
+  faces happen to be in; counts only mean anything if the triangles are grouped by level
+  and the groups are in order. `FbxLodSizes.GroupByLevel` does the grouping, before the
+  geometry is written.
+- **An n-gon fans into several triangles**, so a polygon index is not a triangle index.
+  `MeshGeometry.TrianglePolygons` records where each triangle came from, and the marking
+  is read back through it.
+
+A face left on the shape's own material belongs to no level. It keeps its place, at the
+end, rather than being dropped: deleting geometry an artist can see is the worse of the
+two failures.
+
+This is the written-twice pair the rest of the port uses (§5C.1), with the halves the
+other way round from usual. `lod_size_0..2` is exact and reproduces an untouched file;
+a marking that disagrees with it is an artist having said something, so the **marking
+wins**. A mesh with no `LOD*` material is not marked at all and keeps whatever the
+counts said — which is what stops every ordinary shape, whose material element is
+`AllSame` at index 0, from being read as one long level zero.
+
+`LevelPerTriangle` skips an empty level rather than entering it, in both directions: a
+0/10/50 shape starts at level one, and a shape whose counts run out before its triangles
+do leaves the stragglers in the last level that has any, rather than in a level it has
+none of.
+
 So the class is **carried**, because reproducing a file means reproducing it, and 130
 vanilla meshes would otherwise be changed. But it is only carried: a scene with nothing
 to carry gets the class its edition wants, so geometry authored in a DCC tool becomes
@@ -1332,6 +1378,7 @@ half**; the visible half is never read back.
 | `extra_data`, `xd_<i>_type`, `xd_<i>_name`, `xd_<i>_*` | node | Every `NiExtraData` block, field by field. `BSXFlags` is excluded: it is recalculated (§5.4.1) |
 | `multi_bound_type`, `mb_*`, `multi_bound_culling` | node | A `BSMultiBoundNode`'s culling volume, three blocks deep, plus a `<name>_multibound` mesh drawn for the artist (§5.2.2) |
 | `lod_size_0..2` | geometry | A `BSLODTriShape`'s per-level triangle counts. Without them the shape draws nothing at any distance (§5.2.4) |
+| `LOD0/1/2` materials | geometry | The same levels as a material per polygon, which is the half an artist can edit. Resolved by name; a marking that disagrees with the counts wins (§5.2.4) |
 | `dynamic_vertex_w` | geometry | The fourth component of a `BSDynamicTriShape`'s vertex buffer, one per vertex. The other three are the mesh (§5.3.3) |
 
 ### 5C.3 Collision

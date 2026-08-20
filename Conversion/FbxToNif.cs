@@ -1256,6 +1256,80 @@ namespace SECmd.Conversion
         private readonly List<(NifItem Shape, SkinData Skin, int VertexCount, List<NifTriangle> Triangles)>
             _pendingSkins = [];
 
+        /// <summary>
+        /// The level sizes the mesh being built was marked with, if it was marked.
+        /// </summary>
+        private int[]? _lodSizes;
+
+        /// <summary>
+        /// Reads a level-of-detail marking, and puts the triangles in the order it means.
+        /// </summary>
+        /// <remarks>
+        /// The levels are a material per polygon named <c>LOD0</c>, <c>LOD1</c>,
+        /// <c>LOD2</c> — the one per-face channel a DCC tool lets an artist edit
+        /// (§5.2.4). A NIF stores them as three counts into one triangle list, which
+        /// only means anything if the triangles are grouped by level and the groups are
+        /// in order, so the grouping happens here, before the geometry is written.
+        ///
+        /// Resolved by material name rather than by index: an artist who adds or
+        /// removes a slot would otherwise shift every triangle a level, silently.
+        /// A mesh with no LOD material is not marked, and keeps whatever the counts
+        /// carried across said.
+        /// </remarks>
+        private int[]? ReadLodMarking(FbxObject geometry, MeshGeometry mesh)
+        {
+            if (FbxMeshReader.ReadPolygonMaterials(geometry) is not { } perPolygon
+                || mesh.TrianglePolygons.Count != mesh.Triangles.Count)
+            {
+                return null;
+            }
+
+            if (_scene.ParentsOf(geometry.Id).FirstOrDefault() is not { } holder)
+                return null;
+
+            var byIndex = _scene.ChildrenOf(holder.Id)
+                .Where(o => o.Class == "Material")
+                .Select(o => LevelOf(o.Name))
+                .ToList();
+
+            if (byIndex.All(level => level < 0))
+                return null;
+
+            var levels = new List<int>(mesh.Triangles.Count);
+
+            foreach (int polygon in mesh.TrianglePolygons)
+            {
+                int at = polygon < perPolygon.Count ? perPolygon[polygon] : -1;
+
+                // A face left on the shape's own material belongs to no level, and
+                // GroupByLevel keeps it at the end rather than dropping it.
+                levels.Add(at >= 0 && at < byIndex.Count ? byIndex[at] : -1);
+            }
+
+            (List<int> order, int[] sizes) = FbxLodSizes.GroupByLevel(levels);
+
+            var triangles = order.Select(i => mesh.Triangles[i]).ToList();
+            var polygons = order.Select(i => mesh.TrianglePolygons[i]).ToList();
+
+            mesh.Triangles.Clear();
+            mesh.Triangles.AddRange(triangles);
+            mesh.TrianglePolygons.Clear();
+            mesh.TrianglePolygons.AddRange(polygons);
+
+            return sizes;
+
+            static int LevelOf(string name)
+            {
+                for (int level = 0; level < FbxLodSizes.Levels; level++)
+                {
+                    if (name == FbxLodSizes.LevelMaterial(level))
+                        return level;
+                }
+
+                return -1;
+            }
+        }
+
         /// <summary>Nodes by name, for resolving bones.</summary>
         private readonly Dictionary<string, NifItem> _nodesByName = new(StringComparer.Ordinal);
 
@@ -1297,6 +1371,8 @@ namespace SECmd.Conversion
         {
             string carried = FbxNodeType.Read(geometry, _model, string.Empty, "NiAVObject");
 
+            _lodSizes = ReadLodMarking(geometry, mesh);
+
             if (carried.Length > 0 && _model.Database.Inherits(carried, "BSTriShape"))
             {
                 return _options.LegendaryEdition
@@ -1320,6 +1396,10 @@ namespace SECmd.Conversion
             // A BSLODTriShape's levels are counts into its one triangle list, and a
             // shape whose counts are all zero draws nothing at any distance.
             FbxLodSizes.Read(geometry, _model, shape);
+
+            // An artist marking faces in a DCC tool outranks the counts that came in.
+            if (_lodSizes is { } sizes)
+                FbxLodSizes.WriteSizes(_model, shape, sizes);
             FbxNodeType.ReadFields(geometry, _model, shape, "NiTriBasedGeom");
 
             NifItem data = _model.InsertBlock("NiTriShapeData");
