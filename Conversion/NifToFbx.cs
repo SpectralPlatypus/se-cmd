@@ -774,6 +774,7 @@ namespace SECmd.Conversion
             // same vertices and are not the same thing to the engine.
             FbxNodeType.Write(geometry, shape);
             FbxDynamicShape.Write(geometry, _model, shape);
+            FbxLodSizes.Write(geometry, _model, shape);
             scene.Connect(geometry, holder);
 
             ConvertSkin(scene, shape, geometry);

@@ -1304,6 +1304,10 @@ namespace SECmd.Conversion
             NifItem shape = _model.InsertBlock(type);
             _model.SetString(shape, "Name", NameEncoding.Unsanitize(geometry.Name));
 
+            // A BSLODTriShape's levels are counts into its one triangle list, and a
+            // shape whose counts are all zero draws nothing at any distance.
+            FbxLodSizes.Read(geometry, _model, shape);
+
             NifItem data = _model.InsertBlock("NiTriShapeData");
             WriteGeometryData(data, mesh);
 

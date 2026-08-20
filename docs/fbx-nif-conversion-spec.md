@@ -620,6 +620,25 @@ landscape and `_byoh` meshes, and the pattern inside a file gives it away:
 `FloraMushroom06_1:5` — the alternate variant — as a `NiTriShape`. These are shapes the
 SSE optimiser did not convert, not a class SE prefers for anything.
 
+##### `BSLODTriShape`, and how one is authored
+
+A `BSLODTriShape` does not hold three meshes. It holds **one triangle list, partitioned**:
+the first `LOD0 Size` triangles are the nearest level, the next `LOD1 Size` the one
+after, and the engine draws a prefix of the list according to distance. The counts are
+the whole of the mechanism.
+
+So authoring one is not a matter of picking the class. It means ordering a shape's
+triangles by level and saying how many belong to each — and vanilla shows the working in
+its own names: `florapotatoplant01.nif` holds a shape called
+`L1_FloraPotatoPlant02:1 - L2_FloraPotatoPlant02:1` whose 60 triangles are 10 for LOD1
+and 50 for LOD2. Two LOD groups, authored separately and merged in order into one shape.
+All 34 vanilla uses are plants.
+
+FBX has nowhere to say any of that, so the counts travel as `lod_size_0..2` on the
+geometry. Carrying the class without them gives a shape whose every level is zero
+triangles long: present, correct in every other respect, and invisible. A shape with no
+counts to carry keeps zeros, which is what a mesh with no LOD groups should have.
+
 So the class is **carried**, because reproducing a file means reproducing it, and 130
 vanilla meshes would otherwise be changed. But it is only carried: a scene with nothing
 to carry gets the class its edition wants, so geometry authored in a DCC tool becomes
