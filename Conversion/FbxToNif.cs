@@ -834,7 +834,7 @@ namespace SECmd.Conversion
         private void ReadCollisionMaterial(NifItem shape, FbxObject holder, string name)
         {
             FbxObject? material = _scene.ChildrenOf(holder.Id)
-                .FirstOrDefault(o => o.Class == "Material");
+                .FirstOrDefault(o => o.Class == "Material" && !FbxLodSizes.IsLevelMaterial(o.Name));
 
             if (material is null)
                 return;
@@ -1658,7 +1658,10 @@ namespace SECmd.Conversion
         /// </summary>
         private void BuildMaterial(NifItem shape, FbxObject holder)
         {
-            FbxObject? material = _scene.ChildrenOf(holder.Id).FirstOrDefault(o => o.Class == "Material");
+            // A shape has one material. The level markers (§5.2.4) are materials too
+            // and are not one of them, so they are passed over rather than shaded with.
+            FbxObject? material = _scene.ChildrenOf(holder.Id)
+                .FirstOrDefault(o => o.Class == "Material" && !FbxLodSizes.IsLevelMaterial(o.Name));
 
             if (material is null)
                 return;

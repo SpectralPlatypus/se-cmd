@@ -240,6 +240,37 @@ namespace SECmd.Tests
         }
 
         [Fact]
+        public void ALevelMarkerIsNeverShadedWith()
+        {
+            // A shape has one material and the import takes the first on the node.
+            // The markers are materials too, and a DCC tool writes them in whatever
+            // order it likes -- a shape whose shader came out named LOD0 is what
+            // happens if they are not passed over.
+            var scene = new FbxScene(new NifToFbx(Build()).Convert());
+
+            FbxObject holder = scene.Objects
+                .Where(o => o.Class == "Model")
+                .First(o => scene.ChildrenOf(o.Id).Any(m => m.Name == "LOD1"));
+
+            // This shape has no material of its own, so the markers are the only ones
+            // on the node -- the sharpest form of the hazard.
+            Assert.All(
+                scene.ChildrenOf(holder.Id).Where(o => o.Class == "Material"),
+                m => Assert.True(FbxLodSizes.IsLevelMaterial(m.Name)));
+
+            NifModel rebuilt = Import(scene);
+            NifItem shape = rebuilt.Blocks.First(b => b.Name == "BSLODTriShape");
+
+            // No shader at all is the right answer. A shape shaded with LOD0 is not.
+            Assert.Null(rebuilt.GetRef(shape, "Shader Property"));
+
+            // The markers are not Havok materials either, so nothing warns about them.
+            Assert.True(FbxLodSizes.IsLevelMaterial("LOD0"));
+            Assert.True(FbxLodSizes.IsLevelMaterial("LOD2"));
+            Assert.False(FbxLodSizes.IsLevelMaterial("SKY_HAV_MAT_WOOD"));
+        }
+
+        [Fact]
         public void AMeshWithNoLevelMaterialsIsNotMarked()
         {
             // Every other mesh in the scene has one material and an AllSame element.

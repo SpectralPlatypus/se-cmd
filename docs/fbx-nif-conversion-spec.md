@@ -647,7 +647,8 @@ between them or to build one from a mesh that never was a LOD shape. That is the
 gap the skin partitions had, and it is closed the same way — by putting the thing an
 artist has to touch somewhere the artist can touch it.
 
-The levels ride as **a material per polygon**, named `LOD0`, `LOD1`, `LOD2`. It is the
+The levels ride as **a material per polygon**, named `LOD0`, `LOD1`, `LOD2`. §5.3.4
+covers how the import tells these apart from the two real kinds of material. It is the
 one per-face channel every DCC tool exposes and lets an artist reassign, and it is the
 mechanism ck-cmd already uses to carry collision materials (§4.8) — there
 `eByPolygon`/`eIndexToDirect` on a `bhkPackedNiTriStripsShape`, here the identical layer
@@ -833,6 +834,119 @@ the arrays without the bit leaves them in the file for nothing to read.
 
 The generated vectors agree with those in ck-cmd's own example files to four decimal
 places, which is what establishes that this is the same algorithm.
+
+#### 5.3.4 Materials, on the way back
+
+An FBX material is the busiest carrier in the format: three unrelated things arrive as
+one, and the import tells them apart by where the mesh sits in the scene and what the
+material is called. This section is the whole of it.
+
+##### The invariant that shapes everything else
+
+**A NIF shape has exactly one material.** A shader property hangs off the shape, and
+geometry that needs two materials is two shapes — `multi_material_cube.nif` is a cube
+split into `Cube_Material0`, `Cube_Material1` and `Cube_Material2` for precisely that
+reason. FBX has the opposite convention: one mesh, a list of materials, and a
+`LayerElementMaterial` saying which polygon uses which.
+
+So on the way out, every mesh gets a material element that says `AllSame` /
+`IndexToDirect` / `Materials = [0]`, and the material is connected **to the mesh's node,
+not to the geometry** (§4.3). The import reads it back the same way — `ChildrenOf(holder)`
+filtered to `Material` — which is why a material that a DCC tool attaches to the geometry
+object instead of the node is not found.
+
+##### The three things a material can be
+
+| Where the mesh is | What the material means | Read by |
+| --- | --- | --- |
+| Under an ordinary node | The shader: colours, textures, alpha | `BuildMaterial` |
+| Under a collision node (`_box`, `_convex`, `_mopp`, …) | The Havok material, named after the `SkyrimHavokMaterial` enum, with the collision layer as a `CollisionLayer` property | `ReadCollisionMaterial` |
+| Anywhere, named `LOD0`/`LOD1`/`LOD2` | Not a material at all — a level marker (§5.2.4) | `ReadLodMarking` |
+
+The first two never meet: a collision mesh is recognised by its name suffix long before
+either is read. The third overlaps both, and is passed over by name: `BuildMaterial` and
+`ReadCollisionMaterial` both skip anything `FbxLodSizes.IsLevelMaterial` recognises.
+
+That skip is not decoration. A shape takes the **first** material on its node, the
+export connects the shape's own before the markers, and a mesh marked up in a DCC tool
+has whatever order that tool wrote. Without it, a shape's shader comes back named `LOD0`
+with none of the right textures, and a collision shape warns that `LOD1` is not a Skyrim
+Havok material. A shape whose only materials are markers gets **no shader**, which is the
+right answer rather than a mistaken one.
+
+##### A render material becomes a shader property
+
+`BuildMaterial` produces a `BSLightingShaderProperty` unless the material carries
+`shader_block`, in which case it is an effect shader and §5.3.2 takes over. The lighting
+mapping is §4.3 read backwards:
+
+| NIF field | From | Note |
+| --- | --- | --- |
+| `Glossiness` | `ShininessExponent` | |
+| `Specular Strength` | `SpecularFactor × 999` | NIF stores 0–999, FBX 0–1 |
+| `Specular Color` | `SpecularColor` | defaults to white |
+| `Emissive Color` | `EmissiveColor` | |
+| `Emissive Multiple` | `EmissiveFactor` | defaults to 1 |
+| `Alpha` | `1 − TransparencyFactor` | |
+| `Environment Map Scale` | `environment_map_scale` | user property |
+| `UV Offset`, `UV Scale` | the first texture's `ModelUVTranslation` / `ModelUVScaling` | see below |
+| `Texture Set` | the textures connected to the material | see below |
+
+**The UV transform is per texture in FBX and per shader in NIF.** The export writes the
+same pair onto every slot; the import takes the first texture that names them. The scale
+defaults to **one, not zero** — a zero there does not fail loudly, it multiplies every
+texture coordinate in the mesh to nothing.
+
+**Textures are found by the property they are connected to**, not by order:
+`DiffuseColor` is slot 0, `NormalMap` slot 1, and `slot<N>` is slot `N−1`. Skyrim always
+writes nine slots whether or not they are used. The path comes from `RelativeFilename`,
+falling back to `FileName`, and is normalised to a `textures\…\*.dds` form.
+
+**Sharing is by identity, not by content.** A texture set or alpha property that several
+shapes shared in the source carries an id property, and shapes naming the same id get
+one block back. Rebuilding by equality would be as wrong as never merging: Bethesda's
+files hold identical blocks side by side on purpose, and merging those changes the file.
+
+##### A collision material becomes a Havok enum
+
+The name *is* the value: `SKY_HAV_MAT_WOOD` is looked up in nif.xml's own
+`SkyrimHavokMaterial` enum rather than in a table copied out of ck-cmd, which is what
+keeps the two spellings from drifting. A name that is not in the enum leaves the shape
+with its default material and **warns** — the one case where an unrecognised material is
+reported rather than passed over, because a collision material that silently became
+`STONE` is a footstep sound nobody will trace back here.
+
+The collision layer rides as a `CollisionLayer` string property on the same material and
+defaults to `SKYL_STATIC`. Materials are shared per distinct (material, layer) pair, so a
+shape tree with one material comes back with one.
+
+Note which field is written: `HavokMaterial` declares **three** fields all called
+`Material`, one per game, separated only by their version condition. The name alone finds
+Oblivion's. The Skyrim one is selected by its type.
+
+##### What a per-polygon element means
+
+`ReadPolygonMaterials` returns one index per polygon when the element says `ByPolygon`,
+and null otherwise — an `AllSame` element is *not* a marking, which is what stops every
+ordinary shape in the corpus from reading as one long level zero.
+
+Two things stand between a polygon index and a triangle:
+
+- **An n-gon fans into several triangles**, and a degenerate one is dropped during the
+  fan, so the polygon list and the triangle list are different lengths.
+  `MeshGeometry.TrianglePolygons` records where each triangle came from and is the only
+  correct way back.
+- **The indices are into the node's material list**, in connection order. They are
+  resolved to names before they are used, never used as levels directly.
+
+##### The limit
+
+**A render mesh with several materials keeps the first.** Splitting it into one shape per
+material is what a NIF needs and what the export already produces going the other way,
+but the import does not do it: a cube authored in a DCC tool with three materials comes
+back as one shape shaded entirely with the first. Authoring multi-material geometry means
+splitting the mesh in the DCC tool, which is also what the SSE optimiser expects. Listed
+in §7.3.
 
 ### 5.4 Extra data
 
@@ -1519,6 +1633,7 @@ Real gaps, each with its reason recorded where it bites.
 | --- | --- | --- |
 | A controller with no interpolator, outside a particle system | Not recognised as animation, and only particle systems carry these structurally so far | §5A.6, §4.9A |
 | Array order within a rebuilt convex hull | The vertices and planes agree, but arrive in the fit's order rather than Havok's, which nif.xml says is lexicographic | §5.7.1 |
+| The second and later materials of a multi-material render mesh | A NIF shape has one material, and the import keeps the first rather than splitting the mesh into one shape per material. Authoring means splitting it in the DCC tool | §5.3.4 |
 
 ---
 

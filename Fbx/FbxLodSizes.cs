@@ -33,6 +33,27 @@ namespace SECmd.Fbx
         /// <summary>The material name marking each level's triangles.</summary>
         public static string LevelMaterial(int level) => $"LOD{level}";
 
+        /// <summary>
+        /// Whether a material is a level marker rather than something to shade with.
+        /// </summary>
+        /// <remarks>
+        /// A shape has one material, and the import takes the first one on the node.
+        /// The export connects the shape's own material before the markers, so on a
+        /// round trip the first is the right one — but a mesh marked up in a DCC tool
+        /// has whatever order that tool wrote, and a shape whose shader came out named
+        /// <c>LOD0</c> is the failure that follows.
+        /// </remarks>
+        public static bool IsLevelMaterial(string name)
+        {
+            for (int level = 0; level < Levels; level++)
+            {
+                if (name == LevelMaterial(level))
+                    return true;
+            }
+
+            return false;
+        }
+
         /// <summary>Which level each triangle belongs to, from the counts.</summary>
         /// <remarks>
         /// The counts are consecutive runs over one triangle list: the first
